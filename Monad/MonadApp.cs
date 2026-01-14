@@ -9,7 +9,7 @@ using Monad.Recognition;
 
 namespace Monad;
 
-public sealed class MonadApp(HttpClient httpClient, string auddToken, int recordSeconds, int sleepBetweenSeconds)
+public sealed class MonadApp(HttpClient httpClient, string auddToken, MonadConfig config)
 {
     private string? lastPrint = null;
 
@@ -24,9 +24,9 @@ public sealed class MonadApp(HttpClient httpClient, string auddToken, int record
         {
             try
             {
-                Console.WriteLine($"\nRecording {recordSeconds}s...");
+                Console.WriteLine($"\nRecording {config.RecordSeconds}s...");
 
-                RecordedAudio audio = await recorder.RecordAsync(TimeSpan.FromSeconds(recordSeconds), ct);
+                RecordedAudio audio = await recorder.RecordAsync(TimeSpan.FromSeconds(config.RecordSeconds), ct);
 
                 short[] mono = AudioProcessing.DownmixToMono(audio.Pcm16Interleaved, audio.Channels);
                 mono = AudioProcessing.NormalizeOnlyBoost(mono, peakTarget: 0.90f);
@@ -53,7 +53,7 @@ public sealed class MonadApp(HttpClient httpClient, string auddToken, int record
 
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(sleepBetweenSeconds), ct);
+                await Task.Delay(TimeSpan.FromSeconds(config.SleepBetweenSeconds), ct);
             }
             catch (OperationCanceledException)
             {

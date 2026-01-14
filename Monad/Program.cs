@@ -4,8 +4,11 @@ using System.Threading;
 
 using Monad;
 
-const int RecordSeconds = 12;
-const int SleepBetweenSeconds = 4;
+MonadConfig config = new()
+{
+    RecordSeconds = 12,
+    SleepBetweenSeconds = 4,
+};
 
 string? token = Environment.GetEnvironmentVariable("AUDD_API_TOKEN");
 if (string.IsNullOrWhiteSpace(token))
@@ -29,7 +32,6 @@ Console.CancelKeyPress += (_, e) =>
 MonadApp app = new(
     httpClient: http,
     auddToken: token,
-    recordSeconds: RecordSeconds,
-    sleepBetweenSeconds: SleepBetweenSeconds);
+    config: config);
 
 await app.RunAsync(cts.Token);
