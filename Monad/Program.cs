@@ -67,7 +67,64 @@ while (!cts.IsCancellationRequested)
             string artist = result.TryGetProperty("artist", out JsonElement a) ? (a.GetString() ?? "").Trim() : "";
             string title = result.TryGetProperty("title", out JsonElement t) ? (t.GetString() ?? "").Trim() : "";
 
-            string line = $"{artist} - {title}".Trim(' ', '-');
+            string? isrcTop = result.TryGetProperty("isrc", out JsonElement isrcElem) ? isrcElem.GetString() : null;
+
+            string? isrcSpotify = null;
+            if (result.TryGetProperty("spotify", out JsonElement spotify) &&
+                spotify.ValueKind == JsonValueKind.Object &&
+                spotify.TryGetProperty("external_ids", out JsonElement externalIds) &&
+                externalIds.ValueKind == JsonValueKind.Object &&
+                externalIds.TryGetProperty("isrc", out JsonElement spotifyIsrcElem) &&
+                spotifyIsrcElem.ValueKind == JsonValueKind.String)
+            {
+                isrcSpotify = spotifyIsrcElem.GetString();
+            }
+
+            string? isrcApple = null;
+            if (result.TryGetProperty("apple_music", out JsonElement apple) &&
+                apple.ValueKind == JsonValueKind.Object &&
+                apple.TryGetProperty("isrc", out JsonElement appleIsrcElem) &&
+                appleIsrcElem.ValueKind == JsonValueKind.String)
+            {
+                isrcApple = appleIsrcElem.GetString();
+            }
+
+            string? isrc = null;
+            if (!string.IsNullOrWhiteSpace(isrcTop))
+            {
+                isrc = isrcTop;
+            }
+            else if (!string.IsNullOrWhiteSpace(isrcSpotify))
+            {
+                isrc = isrcSpotify;
+            }
+            else if (!string.IsNullOrWhiteSpace(isrcApple))
+            {
+                isrc = isrcApple;
+            }
+
+            string isrcSuffix;
+            if (string.IsNullOrWhiteSpace(isrc))
+            {
+                isrcSuffix = " [ISRC: n/a]";
+            }
+            else
+            {
+                bool spotifyHas = !string.IsNullOrWhiteSpace(isrcSpotify);
+                bool appleHas = !string.IsNullOrWhiteSpace(isrcApple);
+
+                if (spotifyHas && appleHas &&
+                    !string.Equals(isrcSpotify, isrcApple, StringComparison.OrdinalIgnoreCase))
+                {
+                    isrcSuffix = $" [ISRC mismatch: spotify={isrcSpotify}, apple={isrcApple}]";
+                }
+                else
+                {
+                    isrcSuffix = $" [ISRC: {isrc}]";
+                }
+            }
+
+            string line = $"{artist} - {title} {isrcSuffix}".Trim(' ', '-');
 
             if (!string.Equals(line, lastPrint, StringComparison.Ordinal))
             {
