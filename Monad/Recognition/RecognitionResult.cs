@@ -2,7 +2,7 @@
 
 namespace Monad.Recognition;
 
-public sealed record class RecognitionResult(string Artist, string Title, string IsrcSuffix)
+public sealed record class RecognitionResult(string Artist, string Title, IsrcInfo IsrcInfo)
 {
     public static RecognitionResult FromAuddResult(JsonElement result)
     {
@@ -14,6 +14,6 @@ public sealed record class RecognitionResult(string Artist, string Title, string
         return new RecognitionResult(
             Artist: artist,
             Title: title,
-            IsrcSuffix: isrcInfo.Suffix);
+            IsrcInfo: isrcInfo);
     }
 }
