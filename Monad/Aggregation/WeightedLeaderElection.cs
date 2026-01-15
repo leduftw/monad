@@ -131,13 +131,3 @@ public sealed class WeightedLeaderElection
         return new ScatterStats(count, noMatchCount, keys.Count);
     }
 }
-
-public readonly record struct LeaderSnapshot(string? LeaderKey, double LeaderShare)
-{
-    public static LeaderSnapshot Empty => new(null, 0.0);
-}
-
-public readonly record struct ScatterStats(int TotalSamples, int NoMatchSamples, int DistinctSongKeys)
-{
-    public static ScatterStats Empty => new(0, 0, 0);
-}
