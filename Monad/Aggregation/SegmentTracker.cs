@@ -2,10 +2,12 @@
 
 namespace Monad.Aggregation;
 
-public sealed class SegmentTracker
+public sealed class SegmentTracker(MonadConfig config)
 {
-    private readonly MonadConfig config;
-    private readonly WeightedLeaderElection election;
+    private readonly WeightedLeaderElection election = new(
+            maxSamples: config.RingBufferMaxSamples,
+            maxAge: TimeSpan.FromSeconds(config.RingBufferMaxAgeSeconds),
+            weightsNewestToOldest: config.VoteWeightsNewestToOldest);
 
     private SegmentState? active;
 
@@ -17,15 +19,6 @@ public sealed class SegmentTracker
     private string? pendingLeaderKey;
     private int pendingLeaderCount;
 
-    public SegmentTracker(MonadConfig config)
-    {
-        this.config = config;
-        this.election = new WeightedLeaderElection(
-            maxSamples: config.RingBufferMaxSamples,
-            maxAge: TimeSpan.FromSeconds(config.RingBufferMaxAgeSeconds),
-            weightsNewestToOldest: config.VoteWeightsNewestToOldest);
-    }
-
     // Returns a segment when one is finalized AND passes MinSegmentDurationSeconds.
     // Otherwise returns null (segment dropped or not ended yet).
     public Segment? OnSample(RecognitionSample sample, string? displayTextIfSong)
@@ -33,11 +26,11 @@ public sealed class SegmentTracker
         this.election.Add(sample);
 
         // 1) SILENCE gate
-        bool isSilent = sample.Dbfs <= this.config.SilenceEnterDbfsThreshold;
+        bool isSilent = sample.Dbfs <= config.SilenceEnterDbfsThreshold;
 
         if (this.IsInSilence())
         {
-            bool exitSilence = sample.Dbfs > this.config.SilenceExitDbfsThreshold;
+            bool exitSilence = sample.Dbfs > config.SilenceExitDbfsThreshold;
             if (exitSilence)
             {
                 this.silenceExitCount++;
@@ -47,7 +40,7 @@ public sealed class SegmentTracker
                 this.silenceExitCount = 0;
             }
 
-            if (this.silenceExitCount >= this.config.SilenceExitPersistLoops)
+            if (this.silenceExitCount >= config.SilenceExitPersistLoops)
             {
                 // leave silence; reset counters and proceed to leader/unknown evaluation
                 this.silenceEnterCount = 0;
@@ -71,7 +64,7 @@ public sealed class SegmentTracker
             this.silenceEnterCount = 0;
         }
 
-        if (this.silenceEnterCount >= this.config.SilenceEnterPersistLoops)
+        if (this.silenceEnterCount >= config.SilenceEnterPersistLoops)
         {
             // Enter/keep SILENCE. Start time is acceptance time (now).
             return this.SwitchTo(
@@ -84,7 +77,7 @@ public sealed class SegmentTracker
         // 2) Leader election
         LeaderSnapshot snapshot = this.election.ComputeLeader();
 
-        bool hasEligibleLeader = snapshot.LeaderKey is not null && snapshot.LeaderShare >= this.config.MinLeaderShare;
+        bool hasEligibleLeader = snapshot.LeaderKey is not null && snapshot.LeaderShare >= config.MinLeaderShare;
 
         string? acceptedLeader = null;
 
@@ -100,7 +93,7 @@ public sealed class SegmentTracker
                 this.pendingLeaderCount = 1;
             }
 
-            if (this.pendingLeaderCount >= this.config.LeaderPersistLoops)
+            if (this.pendingLeaderCount >= config.LeaderPersistLoops)
             {
                 acceptedLeader = snapshot.LeaderKey;
             }
@@ -122,7 +115,7 @@ public sealed class SegmentTracker
         }
 
         // 3) UNKNOWN (audio present, no stable leader)
-        bool unknownEligibleByDbfs = sample.Dbfs > this.config.UnknownMinDbfs;
+        bool unknownEligibleByDbfs = sample.Dbfs > config.UnknownMinDbfs;
 
         bool isMostlyNoMatchOrScattered = this.IsMostlyNoMatchOrScattered();
 
@@ -135,7 +128,7 @@ public sealed class SegmentTracker
             this.unknownCount = 0;
         }
 
-        return this.unknownCount >= this.config.UnknownPersistLoops
+        return this.unknownCount >= config.UnknownPersistLoops
             ? this.SwitchTo(
                 kind: SegmentKind.Unknown,
                 nowUtc: sample.TimestampUtc,
@@ -186,7 +179,7 @@ public sealed class SegmentTracker
 
         if (this.active is not null)
         {
-            finalized = this.active.Finalize(nowUtc, this.config.MinSegmentDurationSeconds);
+            finalized = this.active.Finalize(nowUtc, config.MinSegmentDurationSeconds);
         }
 
         // Start new segment at acceptance time
@@ -195,33 +188,8 @@ public sealed class SegmentTracker
         return finalized;
     }
 
-    private sealed class SegmentState
+    private sealed record class SegmentState(SegmentKind Kind, DateTime StartUtc, string? SongKey, string? DisplayText)
     {
-        public SegmentKind Kind
-        {
-            get;
-        }
-        public DateTime StartUtc
-        {
-            get;
-        }
-        public string? SongKey
-        {
-            get;
-        }
-        public string? DisplayText
-        {
-            get;
-        }
-
-        public SegmentState(SegmentKind kind, DateTime startUtc, string? songKey, string? displayText)
-        {
-            this.Kind = kind;
-            this.StartUtc = startUtc;
-            this.SongKey = songKey;
-            this.DisplayText = displayText;
-        }
-
         public Segment? Finalize(DateTime endUtc, int minSeconds)
         {
             TimeSpan dur = endUtc - this.StartUtc;
