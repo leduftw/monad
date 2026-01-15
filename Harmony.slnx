@@ -1,3 +1,4 @@
 <Solution>
+  <Project Path="Monad.Tests/Monad.Tests.csproj" Id="43121548-1ce2-4264-add7-4f6f6fb02354" />
   <Project Path="Monad/Monad.csproj" />
 </Solution>
