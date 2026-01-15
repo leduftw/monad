@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
+using Monad.Aggregation;
 using Monad.Audio;
 using Monad.Recognition;
 
@@ -11,8 +12,6 @@ namespace Monad;
 
 public sealed class MonadApp(HttpClient httpClient, string auddToken, MonadConfig config)
 {
-    private string? lastPrint = null;
-
     public async Task RunAsync(CancellationToken ct)
     {
         Console.WriteLine("Monitoring (AudD)... Ctrl+C to stop.");
@@ -20,8 +19,12 @@ public sealed class MonadApp(HttpClient httpClient, string auddToken, MonadConfi
         LoopbackRecorder recorder = new();
         AuddRecognizer recognizer = new(httpClient, auddToken);
 
+        SegmentTracker tracker = new(config);
+
         while (!ct.IsCancellationRequested)
         {
+            DateTime nowUtc = DateTime.UtcNow;
+
             try
             {
                 Console.WriteLine($"\nRecording {config.RecordSeconds}s...");
@@ -37,9 +40,32 @@ public sealed class MonadApp(HttpClient httpClient, string auddToken, MonadConfi
                 byte[] wavBytes = WavEncoder.ToWavPcm16Mono(mono, audio.SampleRate);
 
                 Console.WriteLine("Recognizing...");
+
                 using JsonDocument resp = await recognizer.RecognizeAsync(wavBytes, ct);
 
-                this.PrintRecognition(resp);
+                string? songKey = null;
+                string? display = null;
+                bool isNoMatch = true;
+
+                if (TryParseRecognition(resp, out RecognitionResult? parsed))
+                {
+                    isNoMatch = false;
+                    songKey = SongKey.FromResult(parsed!);
+                    display = $"{parsed!.Artist} - {parsed!.Title} {parsed!.IsrcInfo.Suffix}".Trim(' ', '-');
+                }
+
+                RecognitionSample sample = new(
+                    TimestampUtc: nowUtc,
+                    Dbfs: dbfs,
+                    SongKey: songKey,
+                    IsNoMatch: isNoMatch);
+
+                Segment? finalized = tracker.OnSample(sample, display);
+
+                if (finalized is not null)
+                {
+                    PrintSegment(finalized);
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -62,31 +88,35 @@ public sealed class MonadApp(HttpClient httpClient, string auddToken, MonadConfi
         }
     }
 
-    private void PrintRecognition(JsonDocument resp)
+    private static bool TryParseRecognition(JsonDocument resp, out RecognitionResult? parsed)
     {
+        parsed = null;
+
         string? status = resp.RootElement.TryGetProperty("status", out JsonElement s) ? s.GetString() : null;
 
         if (status != "success" ||
             !resp.RootElement.TryGetProperty("result", out JsonElement result) ||
             result.ValueKind == JsonValueKind.Null)
         {
-            Console.WriteLine($"No match. (status={status})");
-            return;
+            return false;
         }
 
-        RecognitionResult parsed = RecognitionResult.FromAuddResult(result);
+        parsed = RecognitionResult.FromAuddResult(result);
+        return true;
+    }
 
-        string line = $"{parsed.Artist} - {parsed.Title} {parsed.IsrcInfo.Suffix}".Trim(' ', '-');
+    private static void PrintSegment(Segment segment)
+    {
+        string start = segment.StartUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+        string end = segment.EndUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
 
-        if (!string.Equals(line, this.lastPrint, StringComparison.Ordinal))
+        if (segment.Kind == SegmentKind.Song)
         {
-            string ts = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            Console.WriteLine($"{ts}  {line}");
-            this.lastPrint = line;
+            Console.WriteLine($"SEGMENT  [{start} - {end}]  {segment.DisplayText}");
         }
         else
         {
-            Console.WriteLine($"... same: {line}");
+            Console.WriteLine($"SEGMENT  [{start} - {end}]  {segment.Kind.ToString().ToUpperInvariant()}");
         }
     }
 }
