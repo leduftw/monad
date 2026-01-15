@@ -21,7 +21,6 @@
   <ItemGroup>
     <Folder Include="Aggregation\" />
     <Folder Include="Audio\" />
-    <Folder Include="Recognition\" />
   </ItemGroup>
 
 </Project>
