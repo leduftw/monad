@@ -76,7 +76,7 @@ public sealed class MonadApp(HttpClient httpClient, string auddToken, MonadConfi
 
         RecognitionResult parsed = RecognitionResult.FromAuddResult(result);
 
-        string line = $"{parsed.Artist} - {parsed.Title} {parsed.IsrcSuffix}".Trim(' ', '-');
+        string line = $"{parsed.Artist} - {parsed.Title} {parsed.IsrcInfo.Suffix}".Trim(' ', '-');
 
         if (!string.Equals(line, this.lastPrint, StringComparison.Ordinal))
         {

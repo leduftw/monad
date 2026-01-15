@@ -12,11 +12,6 @@ public static class SongKey
         string artist = (parsed.Artist ?? string.Empty).Trim();
         string title = (parsed.Title ?? string.Empty).Trim();
 
-        if (artist.Length == 0 && title.Length == 0)
-        {
-            return null;
-        }
-
-        return "text:" + artist.ToUpperInvariant() + "|" + title.ToUpperInvariant();
+        return artist.Length == 0 && title.Length == 0 ? null : "text:" + artist.ToUpperInvariant() + "|" + title.ToUpperInvariant();
     }
 }
