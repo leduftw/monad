@@ -1,4 +1,6 @@
-﻿namespace Monad.Tests;
+﻿using Xunit;
+
+namespace Monad.Tests;
 
 public class UnitTest1
 {
