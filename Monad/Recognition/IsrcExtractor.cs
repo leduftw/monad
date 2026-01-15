@@ -12,13 +12,20 @@ public static class IsrcExtractor
         string? isrcSpotify = TryGetSpotifyIsrc(result);
         string? isrcApple = TryGetAppleIsrc(result);
 
-        string? selected = null;
+        // Uppercase all extracted values
+        isrcTop = isrcTop?.ToUpperInvariant();
+        isrcSpotify = isrcSpotify?.ToUpperInvariant();
+        isrcApple = isrcApple?.ToUpperInvariant();
 
         if (!string.IsNullOrWhiteSpace(isrcTop))
         {
-            selected = isrcTop;
+            // If top ISRC is present, prefer it unconditionally.
+            return new IsrcInfo(isrcTop, isrcSpotify, isrcApple, $"[ISRC: {isrcTop}]");
         }
-        else if (!string.IsNullOrWhiteSpace(isrcSpotify))
+
+        string? selected = null;
+
+        if (!string.IsNullOrWhiteSpace(isrcSpotify))
         {
             selected = isrcSpotify;
         }
