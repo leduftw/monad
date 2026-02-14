@@ -122,22 +122,23 @@ public sealed class WeightedLeaderElectionTests
     }
 
     [Fact]
-    public void ComputeLeader_WithCompetingKeys_ReturnsCorrectWinner()
+    public void ComputeLeader_WithCompetingKeys_RecencyWeightedWinnerWins()
     {
-        // Arrange — weights [1.0, 0.5, 0.25] mapped oldest→newest
-        // oldest: AAA (weight 1.0), middle: BBB (weight 0.5), newest: AAA (weight 0.25)
-        // AAA total = 1.0 + 0.25 = 1.25, BBB total = 0.5, totalWeight = 1.75
+        // Arrange — weights [1.0, 0.5, 0.25] (newest-to-oldest)
+        // oldest: AAA (weight 0.25), middle: AAA (weight 0.5), newest: BBB (weight 1.0)
+        // AAA total = 0.25 + 0.5 = 0.75, BBB total = 1.0, totalWeight = 1.75
+        // BBB wins despite fewer samples because it's newest and gets the highest weight
         WeightedLeaderElection election = CreateDefault();
         election.Add(MakeSample("isrc:AAA", false));
-        election.Add(MakeSample("isrc:BBB", false));
         election.Add(MakeSample("isrc:AAA", false));
+        election.Add(MakeSample("isrc:BBB", false));
 
         // Act
         LeaderSnapshot snapshot = election.ComputeLeader();
 
         // Assert
-        snapshot.LeaderKey.Should().Be("isrc:AAA");
-        snapshot.LeaderShare.Should().BeApproximately(1.25 / 1.75, 0.001);
+        snapshot.LeaderKey.Should().Be("isrc:BBB");
+        snapshot.LeaderShare.Should().BeApproximately(1.0 / 1.75, 0.001);
     }
 
     [Fact]
@@ -173,9 +174,10 @@ public sealed class WeightedLeaderElectionTests
     }
 
     [Fact]
-    public void ComputeLeader_WithFewerSamplesThanMax_UsesTailEndOfWeights()
+    public void ComputeLeader_WithFewerSamplesThanMax_UsesHighestWeights()
     {
-        // Arrange — 1 sample, weights [1.0, 0.5, 0.25], weightStart = 3-1 = 2 → uses weight 0.25
+        // Arrange — 1 sample, weights [1.0, 0.5, 0.25] (newest-to-oldest)
+        // Single sample is newest, gets weight 1.0
         // Single key gets 100% share regardless
         WeightedLeaderElection election = CreateDefault();
         election.Add(MakeSample("isrc:AAA", false));
@@ -190,9 +192,9 @@ public sealed class WeightedLeaderElectionTests
     [Fact]
     public void ComputeLeader_ShareCalculation_IsAccurate()
     {
-        // Arrange — 2 samples, weights tail = [0.5, 0.25]
-        // oldest: AAA (weight 0.5), newest: BBB (weight 0.25)
-        // totalWeight = 0.75, AAA share = 0.5/0.75 ≈ 0.6667
+        // Arrange — 2 samples, weights [1.0, 0.5] (newest-to-oldest, first 2 used)
+        // oldest: AAA (weight 0.5), newest: BBB (weight 1.0)
+        // totalWeight = 1.5, BBB share = 1.0/1.5 ≈ 0.6667
         WeightedLeaderElection election = CreateDefault();
         election.Add(MakeSample("isrc:AAA", false));
         election.Add(MakeSample("isrc:BBB", false));
@@ -201,8 +203,8 @@ public sealed class WeightedLeaderElectionTests
         LeaderSnapshot snapshot = election.ComputeLeader();
 
         // Assert
-        snapshot.LeaderKey.Should().Be("isrc:AAA");
-        snapshot.LeaderShare.Should().BeApproximately(0.5 / 0.75, 0.001);
+        snapshot.LeaderKey.Should().Be("isrc:BBB");
+        snapshot.LeaderShare.Should().BeApproximately(1.0 / 1.5, 0.001);
     }
 
     // --- ComputeScatterStats ---

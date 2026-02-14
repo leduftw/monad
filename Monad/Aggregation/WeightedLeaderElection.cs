@@ -63,20 +63,14 @@ public sealed class WeightedLeaderElection
 
         List<RecognitionSample> list = [.. this.samples]; // oldest -> newest
 
-        int weightStart = this.weightsNewestToOldest.Length - count;
-        if (weightStart < 0)
-        {
-            weightStart = 0;
-        }
-
         Dictionary<string, double> votes = new(StringComparer.OrdinalIgnoreCase);
         double totalWeight = 0.0;
 
-        // iterate oldest->newest, map to corresponding weight slot
+        // iterate oldest->newest, map to corresponding weight (newest=index 0, oldest=index count-1)
         for (int i = 0; i < count; i++)
         {
             RecognitionSample s = list[i];
-            double w = this.weightsNewestToOldest[weightStart + i];
+            double w = this.weightsNewestToOldest[count - 1 - i];
             totalWeight += w;
 
             if (s.SongKey is null)
@@ -94,7 +88,7 @@ public sealed class WeightedLeaderElection
 
         if (votes.Count == 0 || totalWeight <= 1e-9)
         {
-            return new LeaderSnapshot(null, 0.0);
+            return LeaderSnapshot.Empty;
         }
 
         KeyValuePair<string, double> best = votes.OrderByDescending(kvp => kvp.Value).First();
