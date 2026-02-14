@@ -18,9 +18,4 @@
     <ProjectReference Include="..\Monad\Monad.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Folder Include="Aggregation\" />
-    <Folder Include="Audio\" />
-  </ItemGroup>
-
 </Project>

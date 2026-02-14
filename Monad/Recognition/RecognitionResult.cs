@@ -6,8 +6,8 @@ public sealed record class RecognitionResult(string Artist, string Title, IsrcIn
 {
     public static RecognitionResult FromAuddResult(JsonElement result)
     {
-        string artist = result.TryGetProperty("artist", out JsonElement a) ? (a.GetString() ?? "").Trim() : "";
-        string title = result.TryGetProperty("title", out JsonElement t) ? (t.GetString() ?? "").Trim() : "";
+        string artist = result.TryGetProperty("artist", out JsonElement a) && a.ValueKind == JsonValueKind.String ? (a.GetString() ?? "").Trim() : "";
+        string title = result.TryGetProperty("title", out JsonElement t) && t.ValueKind == JsonValueKind.String ? (t.GetString() ?? "").Trim() : "";
 
         IsrcInfo isrcInfo = IsrcExtractor.Extract(result);
 
