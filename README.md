@@ -40,8 +40,8 @@ Monad runs a continuous loop: record a short clip of system audio, send it to Au
 ## Getting started
 
 ```bash
-git clone https://github.com/leduftw/Harmony.git
-cd Harmony
+git clone https://github.com/leduftw/monad.git
+cd monad
 
 # Set your AudD API token
 export AUDD_API_TOKEN="your-token-here"
