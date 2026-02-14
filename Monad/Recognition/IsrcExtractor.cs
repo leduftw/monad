@@ -25,6 +25,7 @@ public static class IsrcExtractor
 
         string? selected = null;
 
+        // If no top-level ISRC, prefer Spotify's if available, then Apple's.
         if (!string.IsNullOrWhiteSpace(isrcSpotify))
         {
             selected = isrcSpotify;
