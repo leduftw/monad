@@ -30,11 +30,6 @@ public sealed class WeightedLeaderElection
         this.samples.AddLast(sample);
 
         this.Prune(sample.TimestampUtc);
-
-        while (this.samples.Count > this.maxSamples)
-        {
-            this.samples.RemoveFirst();
-        }
     }
 
     private void Prune(DateTime nowUtc)
@@ -47,6 +42,11 @@ public sealed class WeightedLeaderElection
                 break;
             }
 
+            this.samples.RemoveFirst();
+        }
+
+        while (this.samples.Count > this.maxSamples)
+        {
             this.samples.RemoveFirst();
         }
     }
