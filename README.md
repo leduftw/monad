@@ -39,12 +39,14 @@ Monad runs a continuous loop: record a short clip of system audio, send it to Au
 
 ## Getting started
 
-```bash
+All commands below should be run in **PowerShell**.
+
+```powershell
 git clone https://github.com/leduftw/monad.git
 cd monad
 
 # Set your AudD API token
-export AUDD_API_TOKEN="your-token-here"
+$env:AUDD_API_TOKEN="your-token-here"
 
 # Run
 dotnet run --project Monad
@@ -54,7 +56,7 @@ Press Ctrl+C to stop.
 
 ## Running tests
 
-```bash
+```powershell
 dotnet test
 ```
 
