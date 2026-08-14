@@ -159,7 +159,12 @@ monad replay recording.wav --no-recognize --window 4 --interval 4 --min-segment 
 
 ### Config file
 
-Anything on the command line wins; then the environment; then this file.
+```bash
+cp monad.example.json monad.json      # then edit it
+```
+
+`monad.json` is gitignored, since it can hold your API token. Anything on the
+command line wins over it; `AUDD_API_TOKEN` sits between the two.
 
 ```json
 {
@@ -174,6 +179,10 @@ Anything on the command line wins; then the environment; then this file.
   }
 }
 ```
+
+Comments and trailing commas are allowed. A leading `~` in a path is expanded
+to your home directory — the shell does that for command line arguments, but a
+config file never passes through one.
 
 Every field of `MonadConfig` can be set under `tuning`, by its own name. The
 configuration is validated at startup, so a combination that cannot work — vote

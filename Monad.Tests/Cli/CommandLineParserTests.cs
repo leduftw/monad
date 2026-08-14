@@ -287,6 +287,55 @@ public sealed class CommandLineParserTests
         Ok(["run"], file: new ConfigFile()).ConfigPath.Should().Be("test-config.json");
     }
 
+    // --- Home directory expansion ---
+
+    [Fact]
+    public void Parse_ExpandsATildeInAConfigFilePath()
+    {
+        // Arrange — a config file path never passes through a shell, so the
+        // tilde arrives literally and has to be expanded here instead.
+        MonadOptions options = Ok(["run"], file: new ConfigFile { Jsonl = "~/listening.jsonl" });
+
+        // Assert
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        options.JsonlPath.Should().Be(System.IO.Path.Combine(home, "listening.jsonl"));
+    }
+
+    [Fact]
+    public void Parse_ExpandsATildeGivenOnTheCommandLine()
+    {
+        // Arrange — reachable when the argument was quoted against the shell
+        MonadOptions options = Ok(["replay", "~/clip.wav"]);
+
+        // Assert
+        options.InputPath.Should().NotStartWith("~");
+        options.InputPath.Should().EndWith("clip.wav");
+    }
+
+    [Theory]
+    [InlineData("/absolute/path.jsonl")]
+    [InlineData("relative/path.jsonl")]
+    [InlineData("~otheruser/path.jsonl")] // another user's home is not supported
+    public void Parse_LeavesOtherPathsAlone(string path)
+    {
+        Ok(["run", "--jsonl", path]).JsonlPath.Should().Be(path);
+    }
+
+    [Fact]
+    public void ExpandHome_WithABareTilde_ReturnsTheHomeDirectory()
+    {
+        CommandLineParser.ExpandHome("~")
+            .Should().Be(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void ExpandHome_WithNothingToExpand_ReturnsItUnchanged(string? path)
+    {
+        CommandLineParser.ExpandHome(path).Should().Be(path);
+    }
+
     [Fact]
     public void Usage_MentionsEveryCommand()
     {

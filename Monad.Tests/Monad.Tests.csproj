@@ -18,4 +18,10 @@
     <ProjectReference Include="..\Monad\Monad.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Copied so a test can load it: the shipped example must stay parseable
+         and match the real config schema. -->
+    <None Include="..\monad.example.json" Link="monad.example.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

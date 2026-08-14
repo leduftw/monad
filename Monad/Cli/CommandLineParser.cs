@@ -239,14 +239,42 @@ public static class CommandLineParser
             Command = resolved,
             Token = token ?? readEnvironment(TokenVariable) ?? file.Token,
             ConfigPath = loadedFrom,
-            JsonlPath = jsonlPath ?? file.Jsonl,
-            InputPath = inputPath,
+            JsonlPath = ExpandHome(jsonlPath ?? file.Jsonl),
+            InputPath = ExpandHome(inputPath),
             Source = source ?? AudioSourceKind.Auto,
             NoRecognize = noRecognize,
             Verbose = verbose,
             Quiet = quiet,
             Config = config,
         });
+    }
+
+    /// <summary>
+    /// Expands a leading <c>~</c> to the home directory.
+    /// </summary>
+    /// <remarks>
+    /// The shell does this for command line arguments, but a path written in a
+    /// config file never passes through one -- so <c>"~/listening.jsonl"</c>
+    /// would otherwise be taken literally and create a directory called "~".
+    /// </remarks>
+    public static string? ExpandHome(string? path)
+    {
+        if (string.IsNullOrEmpty(path) || path[0] != '~')
+        {
+            return path;
+        }
+
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+        if (path.Length == 1)
+        {
+            return home;
+        }
+
+        // "~otheruser/..." means someone else's home, which is not supported.
+        return path[1] == '/' || path[1] == Path.DirectorySeparatorChar
+            ? Path.Combine(home, path[2..])
+            : path;
     }
 
     private static bool TryParseCommand(string value, out MonadCommand command)

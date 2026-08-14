@@ -1,0 +1,36 @@
+// Copy this to monad.json and edit it. monad.json is gitignored, because it
+// can hold your API token and that should never reach the repository.
+//
+// Anything given on the command line wins over this file; the AUDD_API_TOKEN
+// environment variable sits between the two. Every field is optional.
+//
+// Comments and trailing commas are allowed here -- Monad reads the file with
+// JsonCommentHandling.Skip.
+{
+  // Leave empty to use AUDD_API_TOKEN or --token instead.
+  "token": "",
+
+  // Append every finished segment as one JSON object per line.
+  // A leading ~ is expanded to your home directory.
+  "jsonl": "~/listening.jsonl",
+
+  // auto (default) | macos-tap | wasapi | pulse
+  "source": "auto",
+
+  // Every property of MonadConfig can be set here, under its own name.
+  // These four are the ones worth reaching for first.
+  "tuning": {
+    // Seconds of audio sent per lookup.
+    "windowSeconds": 12,
+
+    // Seconds between lookups. The main lever on API cost: each tick is at
+    // most one request, and silent windows cost nothing at all.
+    "intervalSeconds": 15,
+
+    // Segments shorter than this are dropped rather than reported.
+    "minSegmentDurationSeconds": 30,
+
+    // Share of the recent vote a track needs before it is called a song.
+    "minLeaderShare": 0.6
+  }
+}

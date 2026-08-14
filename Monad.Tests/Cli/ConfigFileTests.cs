@@ -131,6 +131,30 @@ public sealed class ConfigFileTests : IDisposable
         config.Tuning.Should().BeNull();
     }
 
+    [Fact]
+    public void Load_ParsesTheExampleShippedWithTheRepository()
+    {
+        // Arrange — monad.example.json is what people copy to start from, so it
+        // has to stay valid as the schema moves.
+        string path = Path.Combine(AppContext.BaseDirectory, "monad.example.json");
+        File.Exists(path).Should().BeTrue($"{path} should be copied to the test output");
+
+        // Act
+        ConfigFile config = ConfigFile.Load(path);
+
+        // Assert — every documented key maps onto a real property
+        config.Source.Should().Be("auto");
+        config.Jsonl.Should().NotBeNullOrWhiteSpace();
+        config.Tuning.Should().NotBeNull();
+        config.Tuning!.WindowSeconds.Should().Be(12);
+        config.Tuning.IntervalSeconds.Should().Be(15);
+        config.Tuning.MinSegmentDurationSeconds.Should().Be(30);
+        config.Tuning.MinLeaderShare.Should().Be(0.6);
+
+        // And the result has to be a configuration Monad will actually accept.
+        FluentActions.Invoking(config.Tuning.Validate).Should().NotThrow();
+    }
+
     // --- Discovery ---
 
     [Fact]
