@@ -1,103 +1,106 @@
 using System;
+using System.Buffers.Binary;
 using System.Text;
+
 using FluentAssertions;
+
 using Monad.Audio;
+
 using Xunit;
 
 namespace Monad.Tests.Audio;
 
 public sealed class WavEncoderTests
 {
-    [Fact]
-    public void ToWavPcm16Mono_WithValidInput_HasCorrectRiffHeader()
-    {
-        // Arrange
-        short[] samples = [100, -100, 200];
+    private const int HeaderBytes = 44;
 
-        // Act
-        byte[] wav = WavEncoder.ToWavPcm16Mono(samples, sampleRate: 44100);
+    [Fact]
+    public void ToWavPcm16Mono_WritesAWellFormedRiffHeader()
+    {
+        // Arrange / Act
+        byte[] wav = WavEncoder.ToWavPcm16Mono(new float[100], sampleRate: 44100);
 
         // Assert
-        string riff = Encoding.ASCII.GetString(wav, 0, 4);
-        string wave = Encoding.ASCII.GetString(wav, 8, 4);
-        riff.Should().Be("RIFF");
-        wave.Should().Be("WAVE");
+        Encoding.ASCII.GetString(wav, 0, 4).Should().Be("RIFF");
+        Encoding.ASCII.GetString(wav, 8, 4).Should().Be("WAVE");
+        Encoding.ASCII.GetString(wav, 12, 4).Should().Be("fmt ");
+        Encoding.ASCII.GetString(wav, 36, 4).Should().Be("data");
+
+        BinaryPrimitives.ReadInt32LittleEndian(wav.AsSpan(4)).Should().Be(wav.Length - 8);
+        BinaryPrimitives.ReadInt32LittleEndian(wav.AsSpan(16)).Should().Be(16); // PCM chunk size
+        BinaryPrimitives.ReadInt16LittleEndian(wav.AsSpan(20)).Should().Be(1); // PCM tag
     }
 
     [Fact]
-    public void ToWavPcm16Mono_WithValidInput_HasCorrectDataChunkSize()
+    public void ToWavPcm16Mono_DescribesMono16BitAudioAtTheGivenRate()
     {
-        // Arrange
-        short[] samples = [100, -100, 200];
-        int expectedDataSize = samples.Length * 2; // 16-bit = 2 bytes per sample
-
-        // Act
-        byte[] wav = WavEncoder.ToWavPcm16Mono(samples, sampleRate: 44100);
-
-        // Assert — find "data" marker and read size from next 4 bytes
-        int dataOffset = FindMarker(wav, "data");
-        dataOffset.Should().BeGreaterThan(0);
-        int dataSize = BitConverter.ToInt32(wav, dataOffset + 4);
-        dataSize.Should().Be(expectedDataSize);
-    }
-
-    [Fact]
-    public void ToWavPcm16Mono_WithValidInput_HasCorrectSampleRate()
-    {
-        // Arrange
-        int sampleRate = 16000;
-
-        // Act
-        byte[] wav = WavEncoder.ToWavPcm16Mono([1000], sampleRate);
-
-        // Assert — sample rate is at bytes 24-27 in the WAV header
-        int encoded = BitConverter.ToInt32(wav, 24);
-        encoded.Should().Be(sampleRate);
-    }
-
-    [Fact]
-    public void ToWavPcm16Mono_WithEmptySamples_ProducesHeaderOnlyOutput()
-    {
-        // Arrange
-        short[] samples = [];
-
-        // Act
-        byte[] wav = WavEncoder.ToWavPcm16Mono(samples, sampleRate: 44100);
+        // Arrange / Act
+        byte[] wav = WavEncoder.ToWavPcm16Mono(new float[10], sampleRate: 48000);
 
         // Assert
-        int dataOffset = FindMarker(wav, "data");
-        dataOffset.Should().BeGreaterThan(0);
-        int dataSize = BitConverter.ToInt32(wav, dataOffset + 4);
-        dataSize.Should().Be(0);
+        BinaryPrimitives.ReadInt16LittleEndian(wav.AsSpan(22)).Should().Be(1); // channels
+        BinaryPrimitives.ReadInt32LittleEndian(wav.AsSpan(24)).Should().Be(48000); // sample rate
+        BinaryPrimitives.ReadInt32LittleEndian(wav.AsSpan(28)).Should().Be(48000 * 2); // byte rate
+        BinaryPrimitives.ReadInt16LittleEndian(wav.AsSpan(32)).Should().Be(2); // block align
+        BinaryPrimitives.ReadInt16LittleEndian(wav.AsSpan(34)).Should().Be(16); // bits per sample
     }
 
     [Fact]
-    public void ToWavPcm16Mono_WithKnownSample_EncodesCorrectPcm16Bytes()
+    public void ToWavPcm16Mono_SizesTheDataChunkFromTheSampleCount()
     {
-        // Arrange — sample value 0x0190 (400) in little-endian: 0x90, 0x01
-        short[] samples = [400];
+        // Arrange / Act
+        byte[] wav = WavEncoder.ToWavPcm16Mono(new float[256], sampleRate: 44100);
 
-        // Act
-        byte[] wav = WavEncoder.ToWavPcm16Mono(samples, sampleRate: 44100);
-
-        // Assert — data starts after the "data" marker + 4-byte size
-        int dataOffset = FindMarker(wav, "data") + 8;
-        wav[dataOffset].Should().Be(0x90);
-        wav[dataOffset + 1].Should().Be(0x01);
+        // Assert
+        BinaryPrimitives.ReadInt32LittleEndian(wav.AsSpan(40)).Should().Be(512);
+        wav.Length.Should().Be(HeaderBytes + 512);
     }
 
-    private static int FindMarker(byte[] wav, string marker)
+    [Fact]
+    public void ToWavPcm16Mono_WithNoSamples_WritesHeaderOnly()
     {
-        byte[] target = Encoding.ASCII.GetBytes(marker);
-        for (int i = 0; i <= wav.Length - target.Length; i++)
-        {
-            if (wav[i] == target[0] && wav[i + 1] == target[1] &&
-                wav[i + 2] == target[2] && wav[i + 3] == target[3])
-            {
-                return i;
-            }
-        }
+        // Arrange / Act
+        byte[] wav = WavEncoder.ToWavPcm16Mono([], sampleRate: 44100);
 
-        return -1;
+        // Assert
+        wav.Length.Should().Be(HeaderBytes);
+        BinaryPrimitives.ReadInt32LittleEndian(wav.AsSpan(40)).Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(0f, 0)]
+    [InlineData(1f, 32767)]
+    [InlineData(-1f, -32767)]
+    [InlineData(0.5f, 16384)] // 0.5 * 32767 = 16383.5, rounded away from zero
+    [InlineData(-0.5f, -16384)]
+    public void ToWavPcm16Mono_ScalesSamplesToSignedSixteenBit(float sample, short expected)
+    {
+        // Arrange / Act
+        byte[] wav = WavEncoder.ToWavPcm16Mono([sample], sampleRate: 8000);
+
+        // Assert
+        BinaryPrimitives.ReadInt16LittleEndian(wav.AsSpan(HeaderBytes)).Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData(2.5f, 32767)]
+    [InlineData(-2.5f, -32767)]
+    public void ToWavPcm16Mono_ClampsSamplesOutsideFullScale(float sample, short expected)
+    {
+        // Arrange / Act — float audio can exceed ±1; it must clamp, not wrap
+        byte[] wav = WavEncoder.ToWavPcm16Mono([sample], sampleRate: 8000);
+
+        // Assert
+        BinaryPrimitives.ReadInt16LittleEndian(wav.AsSpan(HeaderBytes)).Should().Be(expected);
+    }
+
+    [Fact]
+    public void ToWavPcm16Mono_WithInvalidSampleRate_Throws()
+    {
+        // Arrange / Act
+        Action act = () => WavEncoder.ToWavPcm16Mono([0f], sampleRate: 0);
+
+        // Assert
+        act.Should().Throw<ArgumentOutOfRangeException>();
     }
 }

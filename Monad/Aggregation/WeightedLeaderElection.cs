@@ -1,89 +1,127 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
-using System.Linq;
 
 namespace Monad.Aggregation;
 
+/// <param name="LeaderSinceUtc">
+/// When the leading track was first heard in the current run. Recognition needs
+/// several loops to settle, so this is meaningfully earlier than the moment the
+/// leader is accepted -- using it as the segment boundary keeps reported start
+/// times close to when the music actually started.
+/// </param>
+public readonly record struct LeaderSnapshot(string? LeaderKey, double LeaderShare, DateTimeOffset? LeaderSinceUtc)
+{
+    public static LeaderSnapshot Empty { get; } = new(null, 0.0, null);
+}
+
+public readonly record struct ScatterStats(int TotalSamples, int NoMatchSamples, int DistinctSongKeys)
+{
+    public static ScatterStats Empty { get; } = new(0, 0, 0);
+
+    public double NoMatchShare => this.TotalSamples <= 0 ? 1.0 : (double)this.NoMatchSamples / this.TotalSamples;
+}
+
+/// <summary>
+/// A short, recency-weighted vote over recent recognition results. A single
+/// wrong answer cannot outvote several consistent ones, which is what keeps the
+/// segment tracker from flapping between tracks.
+/// </summary>
 public sealed class WeightedLeaderElection
 {
     private readonly int maxSamples;
     private readonly TimeSpan maxAge;
     private readonly double[] weightsNewestToOldest;
-
-    private readonly LinkedList<RecognitionSample> samples; // oldest -> newest
+    private readonly List<RecognitionSample> samples = []; // oldest -> newest
 
     public WeightedLeaderElection(int maxSamples, TimeSpan maxAge, double[] weightsNewestToOldest)
     {
-        this.maxSamples = maxSamples;
-        this.maxAge = maxAge;
-        this.weightsNewestToOldest = weightsNewestToOldest;
-        this.samples = new LinkedList<RecognitionSample>();
+        ArgumentNullException.ThrowIfNull(weightsNewestToOldest);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxSamples, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(maxAge, TimeSpan.Zero);
 
         if (weightsNewestToOldest.Length != maxSamples)
         {
-            throw new ArgumentException("VoteWeightsNewestToOldest length must equal RingBufferMaxSamples.");
+            throw new ArgumentException(
+                $"Expected {maxSamples} vote weights to match the ring buffer size, "
+                + $"but {weightsNewestToOldest.Length} were supplied.",
+                nameof(weightsNewestToOldest));
         }
+
+        foreach (double weight in weightsNewestToOldest)
+        {
+            if (weight < 0.0 || double.IsNaN(weight))
+            {
+                throw new ArgumentException("Vote weights must be non-negative numbers.", nameof(weightsNewestToOldest));
+            }
+        }
+
+        this.maxSamples = maxSamples;
+        this.maxAge = maxAge;
+        this.weightsNewestToOldest = (double[])weightsNewestToOldest.Clone();
     }
+
+    public int Count => this.samples.Count;
 
     public void Add(RecognitionSample sample)
     {
-        this.samples.AddLast(sample);
+        ArgumentNullException.ThrowIfNull(sample);
 
+        this.samples.Add(sample);
         this.Prune(sample.TimestampUtc);
     }
 
-    private void Prune(DateTime nowUtc)
-    {
-        while (this.samples.First is not null)
-        {
-            TimeSpan age = nowUtc - this.samples.First.Value.TimestampUtc;
-            if (age <= this.maxAge)
-            {
-                break;
-            }
+    public void Clear() => this.samples.Clear();
 
-            this.samples.RemoveFirst();
+    private void Prune(DateTimeOffset nowUtc)
+    {
+        int drop = 0;
+
+        while (drop < this.samples.Count && nowUtc - this.samples[drop].TimestampUtc > this.maxAge)
+        {
+            drop++;
         }
 
-        while (this.samples.Count > this.maxSamples)
+        if (this.samples.Count - drop > this.maxSamples)
         {
-            this.samples.RemoveFirst();
+            drop = this.samples.Count - this.maxSamples;
+        }
+
+        if (drop > 0)
+        {
+            this.samples.RemoveRange(0, drop);
         }
     }
 
     public LeaderSnapshot ComputeLeader()
     {
-        // Apply weights newest->oldest across current samples count
-        // If we have fewer than maxSamples, use the newest subset of weights.
         int count = this.samples.Count;
+
         if (count == 0)
         {
             return LeaderSnapshot.Empty;
         }
 
-        List<RecognitionSample> list = [.. this.samples]; // oldest -> newest
-
         Dictionary<string, double> votes = new(StringComparer.OrdinalIgnoreCase);
         double totalWeight = 0.0;
 
-        // iterate oldest->newest, map to corresponding weight (newest=index 0, oldest=index count-1)
+        // The newest sample takes weights[0]; walking oldest -> newest means
+        // index `count - 1 - i`. Partially filled buffers use the heaviest
+        // weights, so early results are not artificially discounted.
         for (int i = 0; i < count; i++)
         {
-            RecognitionSample s = list[i];
-            double w = this.weightsNewestToOldest[count - 1 - i];
-            totalWeight += w;
+            RecognitionSample sample = this.samples[i];
+            double weight = this.weightsNewestToOldest[count - 1 - i];
 
-            if (s.SongKey is null)
+            // No-match samples still count towards the denominator: a track has
+            // to beat the silence and the noise, not just the other guesses.
+            totalWeight += weight;
+
+            if (sample.SongKey is null)
             {
                 continue;
             }
 
-            if (!votes.TryGetValue(s.SongKey, out double existing))
-            {
-                existing = 0.0;
-            }
-
-            votes[s.SongKey] = existing + w;
+            votes[sample.SongKey] = votes.GetValueOrDefault(sample.SongKey) + weight;
         }
 
         if (votes.Count == 0 || totalWeight <= 1e-9)
@@ -91,30 +129,65 @@ public sealed class WeightedLeaderElection
             return LeaderSnapshot.Empty;
         }
 
-        KeyValuePair<string, double> best = votes.OrderByDescending(kvp => kvp.Value).First();
-        double share = best.Value / totalWeight;
+        string? leader = null;
+        double best = double.NegativeInfinity;
 
-        return new LeaderSnapshot(best.Key, share);
+        foreach ((string key, double weight) in votes)
+        {
+            if (weight > best)
+            {
+                best = weight;
+                leader = key;
+            }
+        }
+
+        return new LeaderSnapshot(leader, best / totalWeight, this.FirstHeard(leader!));
+    }
+
+    /// <summary>
+    /// Walks back from the newest sample to find when this run of the track
+    /// started. Unrecognised samples do not end the run -- a couple of failed
+    /// lookups in the middle of a song are normal -- but a different track does.
+    /// </summary>
+    private DateTimeOffset? FirstHeard(string key)
+    {
+        DateTimeOffset? since = null;
+
+        for (int i = this.samples.Count - 1; i >= 0; i--)
+        {
+            RecognitionSample sample = this.samples[i];
+
+            if (sample.SongKey is null)
+            {
+                continue;
+            }
+
+            if (!string.Equals(sample.SongKey, key, StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            since = sample.TimestampUtc;
+        }
+
+        return since;
     }
 
     public ScatterStats ComputeScatterStats()
     {
-        // Used for UNKNOWN: "mostly no match or scattered"
-        // We treat "scattered" as: many distinct keys, no dominant, many no-match.
-        int count = this.samples.Count;
-        if (count == 0)
+        if (this.samples.Count == 0)
         {
             return ScatterStats.Empty;
         }
 
-        int noMatchCount = 0;
+        int noMatch = 0;
         HashSet<string> keys = new(StringComparer.OrdinalIgnoreCase);
 
         foreach (RecognitionSample sample in this.samples)
         {
             if (sample.IsNoMatch || sample.SongKey is null)
             {
-                noMatchCount++;
+                noMatch++;
             }
             else
             {
@@ -122,6 +195,6 @@ public sealed class WeightedLeaderElection
             }
         }
 
-        return new ScatterStats(count, noMatchCount, keys.Count);
+        return new ScatterStats(this.samples.Count, noMatch, keys.Count);
     }
 }

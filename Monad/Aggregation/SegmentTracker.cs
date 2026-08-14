@@ -1,87 +1,91 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
 
 namespace Monad.Aggregation;
 
+/// <summary>
+/// Turns a stream of per-window recognition results into a timeline of
+/// segments. Three states -- <see cref="SegmentKind.Song"/>,
+/// <see cref="SegmentKind.Silence"/> and <see cref="SegmentKind.Unknown"/> --
+/// with hysteresis on every transition, so borderline audio does not make the
+/// output flap.
+/// </summary>
 public sealed class SegmentTracker(MonadConfig config)
 {
     private readonly WeightedLeaderElection election = new(
-            maxSamples: config.RingBufferMaxSamples,
-            maxAge: TimeSpan.FromSeconds(config.RingBufferMaxAgeSeconds),
-            weightsNewestToOldest: config.VoteWeightsNewestToOldest);
+        maxSamples: config.RingBufferMaxSamples,
+        maxAge: TimeSpan.FromSeconds(config.RingBufferMaxAgeSeconds),
+        weightsNewestToOldest: config.VoteWeightsNewestToOldest);
 
-    private SegmentState? active;
+    /// <summary>
+    /// Last known display text per song key. The vote regularly elects a track
+    /// from older samples while the current window recognised nothing, and
+    /// without this the resulting segment would be reported with no name.
+    /// </summary>
+    private readonly Dictionary<string, string> displayTextByKey = new(StringComparer.OrdinalIgnoreCase);
+
+    private ActiveSegment? active;
 
     private int silenceEnterCount;
     private int silenceExitCount;
-
     private int unknownCount;
 
     private string? pendingLeaderKey;
     private int pendingLeaderCount;
 
-    // Returns a segment when one is finalized AND passes MinSegmentDurationSeconds.
-    // Otherwise returns null (segment dropped or not ended yet).
-    public Segment? OnSample(RecognitionSample sample, string? displayTextIfSong)
+    /// <summary>The state currently being accumulated, or <c>null</c> before the first one starts.</summary>
+    public SegmentKind? ActiveKind => this.active?.Kind;
+
+    public string? ActiveSongKey => this.active?.SongKey;
+
+    public DateTimeOffset? ActiveStartUtc => this.active?.StartUtc;
+
+    /// <summary>
+    /// Feeds in one analysed window. Returns the previous segment when this
+    /// sample ended it and it was long enough to be worth reporting; otherwise
+    /// <c>null</c>.
+    /// </summary>
+    public Segment? OnSample(RecognitionSample sample)
     {
+        ArgumentNullException.ThrowIfNull(sample);
+
         this.election.Add(sample);
+        this.RememberDisplayText(sample);
 
-        // 1) SILENCE gate
-        bool isSilent = sample.Dbfs <= config.SilenceEnterDbfsThreshold;
+        DateTimeOffset now = sample.TimestampUtc;
 
-        if (this.IsInSilence())
+        if (this.active?.Kind == SegmentKind.Silence)
         {
-            bool exitSilence = sample.Dbfs > config.SilenceExitDbfsThreshold;
-            if (exitSilence)
-            {
-                this.silenceExitCount++;
-            }
-            else
-            {
-                this.silenceExitCount = 0;
-            }
+            // Leaving silence takes sustained level above the (higher) exit
+            // threshold; the gap between the two thresholds is the hysteresis.
+            this.silenceExitCount = sample.Dbfs > config.SilenceExitDbfsThreshold ? this.silenceExitCount + 1 : 0;
 
-            if (this.silenceExitCount >= config.SilenceExitPersistLoops)
+            if (this.silenceExitCount < config.SilenceExitPersistLoops)
             {
-                // leave silence; reset counters and proceed to leader/unknown evaluation
-                this.silenceEnterCount = 0;
-                this.silenceExitCount = 0;
-
-                // Note: do not immediately start a new segment here; fallthrough below.
-            }
-            else
-            {
-                // Stay in silence; nothing to change.
                 return null;
             }
-        }
 
-        if (isSilent)
-        {
-            this.silenceEnterCount++;
+            this.silenceExitCount = 0;
+            this.silenceEnterCount = 0;
+
+            // Fall through: something is playing again, work out what.
         }
         else
         {
-            this.silenceEnterCount = 0;
+            this.silenceEnterCount = sample.Dbfs <= config.SilenceEnterDbfsThreshold ? this.silenceEnterCount + 1 : 0;
+
+            if (this.silenceEnterCount >= config.SilenceEnterPersistLoops)
+            {
+                this.ResetPendingLeader();
+                this.unknownCount = 0;
+
+                return this.SwitchTo(SegmentKind.Silence, now, now, songKey: null, displayText: null);
+            }
         }
 
-        if (this.silenceEnterCount >= config.SilenceEnterPersistLoops)
-        {
-            // Enter/keep SILENCE. Start time is acceptance time (now).
-            return this.SwitchTo(
-                kind: SegmentKind.Silence,
-                nowUtc: sample.TimestampUtc,
-                songKey: null,
-                displayText: null);
-        }
-
-        // 2) Leader election
         LeaderSnapshot snapshot = this.election.ComputeLeader();
 
-        bool hasEligibleLeader = snapshot.LeaderKey is not null && snapshot.LeaderShare >= config.MinLeaderShare;
-
-        string? acceptedLeader = null;
-
-        if (hasEligibleLeader)
+        if (snapshot.LeaderKey is not null && snapshot.LeaderShare >= config.MinLeaderShare)
         {
             if (string.Equals(snapshot.LeaderKey, this.pendingLeaderKey, StringComparison.OrdinalIgnoreCase))
             {
@@ -95,113 +99,137 @@ public sealed class SegmentTracker(MonadConfig config)
 
             if (this.pendingLeaderCount >= config.LeaderPersistLoops)
             {
-                acceptedLeader = snapshot.LeaderKey;
+                this.unknownCount = 0;
+
+                return this.SwitchTo(
+                    SegmentKind.Song,
+                    transitionUtc: now,
+                    startUtc: snapshot.LeaderSinceUtc ?? now,
+                    songKey: snapshot.LeaderKey,
+                    displayText: this.displayTextByKey.GetValueOrDefault(snapshot.LeaderKey));
             }
         }
         else
         {
-            this.pendingLeaderKey = null;
-            this.pendingLeaderCount = 0;
+            this.ResetPendingLeader();
         }
 
-        if (acceptedLeader is not null)
-        {
-            this.unknownCount = 0;
-            return this.SwitchTo(
-                kind: SegmentKind.Song,
-                nowUtc: sample.TimestampUtc,
-                songKey: acceptedLeader,
-                displayText: displayTextIfSong);
-        }
-
-        // 3) UNKNOWN (audio present, no stable leader)
-        bool unknownEligibleByDbfs = sample.Dbfs > config.UnknownMinDbfs;
-
-        bool isMostlyNoMatchOrScattered = this.IsMostlyNoMatchOrScattered();
-
-        if (unknownEligibleByDbfs && isMostlyNoMatchOrScattered)
-        {
-            this.unknownCount++;
-        }
-        else
-        {
-            this.unknownCount = 0;
-        }
+        bool loudEnough = sample.Dbfs > config.UnknownMinDbfs;
+        this.unknownCount = loudEnough && this.IsScattered() ? this.unknownCount + 1 : 0;
 
         return this.unknownCount >= config.UnknownPersistLoops
-            ? this.SwitchTo(
-                kind: SegmentKind.Unknown,
-                nowUtc: sample.TimestampUtc,
-                songKey: null,
-                displayText: null)
+            ? this.SwitchTo(SegmentKind.Unknown, now, now, songKey: null, displayText: null)
             : null;
     }
 
-    private bool IsMostlyNoMatchOrScattered()
+    /// <summary>
+    /// Closes the segment in progress, at shutdown. Without this the last thing
+    /// heard in a session is never reported.
+    /// </summary>
+    public Segment? Flush(DateTimeOffset endUtc)
     {
-        ScatterStats stats = this.election.ComputeScatterStats();
-        if (stats.TotalSamples <= 0)
-        {
-            return true;
-        }
+        ActiveSegment? closing = this.active;
+        this.active = null;
 
-        // Concrete definition:
-        // - "mostly no match" => >= 60% no-match
-        // - OR "scattered" => >= 2 distinct keys AND no stable leader (handled outside)
-        double noMatchShare = (double)stats.NoMatchSamples / stats.TotalSamples;
-
-        return noMatchShare >= 0.60 || stats.DistinctSongKeys >= 2;
+        return closing?.Finalize(endUtc, config.MinSegmentDurationSeconds);
     }
 
-    private bool IsInSilence() => this.active is not null && this.active.Kind == SegmentKind.Silence;
-
-    private Segment? SwitchTo(SegmentKind kind, DateTime nowUtc, string? songKey, string? displayText)
+    /// <summary>
+    /// Whether recent results are too inconsistent to name a track: mostly
+    /// unrecognised, or bouncing between several different ones.
+    /// </summary>
+    private bool IsScattered()
     {
-        // If already in the same segment type (and same song key for songs), do nothing.
-        if (this.active is not null)
-        {
-            if (this.active.Kind == kind)
-            {
-                if (kind != SegmentKind.Song)
-                {
-                    return null;
-                }
+        ScatterStats stats = this.election.ComputeScatterStats();
 
-                if (string.Equals(this.active.SongKey, songKey, StringComparison.OrdinalIgnoreCase))
-                {
-                    return null;
-                }
+        return stats.TotalSamples <= 0
+            || stats.NoMatchShare >= config.UnknownNoMatchShare
+            || stats.DistinctSongKeys >= config.UnknownMinDistinctKeys;
+    }
+
+    private void ResetPendingLeader()
+    {
+        this.pendingLeaderKey = null;
+        this.pendingLeaderCount = 0;
+    }
+
+    private void RememberDisplayText(RecognitionSample sample)
+    {
+        if (sample.SongKey is null || string.IsNullOrWhiteSpace(sample.DisplayText))
+        {
+            return;
+        }
+
+        // A long session hears a lot of tracks; the vote can only ever elect one
+        // that is still in the ring buffer, so an occasional reset costs nothing.
+        if (this.displayTextByKey.Count >= 256)
+        {
+            this.displayTextByKey.Clear();
+        }
+
+        this.displayTextByKey[sample.SongKey] = sample.DisplayText;
+    }
+
+    /// <param name="transitionUtc">When this sample was analysed.</param>
+    /// <param name="startUtc">
+    /// When the new state is believed to have actually begun, which for a track
+    /// is when it was first heard rather than when the vote settled.
+    /// </param>
+    private Segment? SwitchTo(
+        SegmentKind kind,
+        DateTimeOffset transitionUtc,
+        DateTimeOffset startUtc,
+        string? songKey,
+        string? displayText)
+    {
+        if (this.active is { } current && current.Kind == kind)
+        {
+            bool sameSegment = kind != SegmentKind.Song
+                || string.Equals(current.SongKey, songKey, StringComparison.OrdinalIgnoreCase);
+
+            if (sameSegment)
+            {
+                return null;
             }
         }
 
-        // Close existing segment at nowUtc
-        Segment? finalized = null;
+        // One shared instant so the timeline has no gap or overlap across the
+        // handover, clamped inside the window we actually know about.
+        DateTimeOffset boundary = startUtc;
 
-        if (this.active is not null)
+        if (this.active is { } previous && boundary < previous.StartUtc)
         {
-            finalized = this.active.Finalize(nowUtc, config.MinSegmentDurationSeconds);
+            boundary = previous.StartUtc;
         }
 
-        // Start new segment at acceptance time
-        this.active = new SegmentState(kind, nowUtc, songKey, displayText);
+        if (boundary > transitionUtc)
+        {
+            boundary = transitionUtc;
+        }
+
+        Segment? finalized = this.active?.Finalize(boundary, config.MinSegmentDurationSeconds);
+
+        this.active = new ActiveSegment(kind, boundary, songKey, displayText);
 
         return finalized;
     }
 
-    private sealed record class SegmentState(SegmentKind Kind, DateTime StartUtc, string? SongKey, string? DisplayText)
+    private sealed record class ActiveSegment(
+        SegmentKind Kind,
+        DateTimeOffset StartUtc,
+        string? SongKey,
+        string? DisplayText)
     {
-        public Segment? Finalize(DateTime endUtc, int minSeconds)
+        public Segment? Finalize(DateTimeOffset endUtc, int minimumSeconds)
         {
-            TimeSpan dur = endUtc - this.StartUtc;
+            TimeSpan duration = endUtc - this.StartUtc;
 
-            return dur.TotalSeconds < minSeconds
+            // A segment that occupied no time says nothing, whatever the
+            // configured minimum: a state entered on the very last window has
+            // nothing to report.
+            return duration <= TimeSpan.Zero || duration.TotalSeconds < minimumSeconds
                 ? null
-                : new Segment(
-                Kind: this.Kind,
-                StartUtc: this.StartUtc,
-                EndUtc: endUtc,
-                SongKey: this.SongKey,
-                DisplayText: this.DisplayText);
+                : new Segment(this.Kind, this.StartUtc, endUtc, this.SongKey, this.DisplayText);
         }
     }
 }

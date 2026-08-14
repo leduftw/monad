@@ -1,16 +1,23 @@
 using System;
+
 using FluentAssertions;
+
+using Monad;
 using Monad.Aggregation;
+
 using Xunit;
 
 namespace Monad.Tests.Aggregation;
 
 public sealed class SegmentTrackerTests
 {
-    private static readonly DateTime T0 = new(2025, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTimeOffset T0 = new(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
 
-    // Test-friendly config: maxSamples=1 so each sample instantly determines the leader.
-    private static MonadConfig TestConfig => new()
+    private const double Loud = -30.0;
+    private const double Quiet = -70.0;
+
+    /// <summary>One sample decides the leader outright, which keeps most tests to the point.</summary>
+    private static MonadConfig Immediate => new()
     {
         RingBufferMaxSamples = 1,
         RingBufferMaxAgeSeconds = 300,
@@ -18,321 +25,374 @@ public sealed class SegmentTrackerTests
         MinLeaderShare = 0.50,
         LeaderPersistLoops = 1,
         MinSegmentDurationSeconds = 0,
-        SilenceEnterDbfsThreshold = -65.0,
         SilenceEnterPersistLoops = 2,
-        SilenceExitDbfsThreshold = -60.0,
         SilenceExitPersistLoops = 2,
-        UnknownMinDbfs = -60.0,
         UnknownPersistLoops = 2,
     };
 
-    private static RecognitionSample MakeSample(
-        double dbfs, string? songKey, bool isNoMatch, DateTime timestamp) =>
-        new(timestamp, dbfs, songKey, isNoMatch);
+    private static MonadConfig Voting => new()
+    {
+        RingBufferMaxSamples = 3,
+        RingBufferMaxAgeSeconds = 300,
+        VoteWeightsNewestToOldest = [1.0, 1.0, 1.0],
+        MinLeaderShare = 0.40,
+        LeaderPersistLoops = 2,
+        MinSegmentDurationSeconds = 0,
+        SilenceEnterPersistLoops = 2,
+        SilenceExitPersistLoops = 2,
+        UnknownPersistLoops = 99, // keep Unknown out of the way
+    };
 
-    // --- Silence detection ---
+    private static RecognitionSample Sample(
+        DateTimeOffset at, double dbfs, string? key = null, string? display = null) =>
+        new(at, dbfs, key, IsNoMatch: key is null, display);
+
+    // --- Silence ---
 
     [Fact]
     public void OnSample_WithSilenceForEnterPersistLoops_EntersSilence()
     {
         // Arrange
-        SegmentTracker tracker = new(TestConfig);
+        SegmentTracker tracker = new(Immediate);
 
-        // Act — need SilenceEnterPersistLoops (2) silent samples
-        Segment? r1 = tracker.OnSample(MakeSample(-70.0, null, true, T0), null);
-        Segment? r2 = tracker.OnSample(MakeSample(-70.0, null, true, T0.AddSeconds(1)), null);
+        // Act
+        tracker.OnSample(Sample(T0, Quiet));
+        SegmentKind? afterOne = tracker.ActiveKind;
 
-        // Assert — enters silence on r2 (first segment, no prior → SwitchTo returns null)
-        r1.Should().BeNull();
-        r2.Should().BeNull(); // already in silence, dedup returns null
+        tracker.OnSample(Sample(T0.AddSeconds(10), Quiet));
+
+        // Assert — one quiet window is not enough, two are
+        afterOne.Should().NotBe(SegmentKind.Silence);
+        tracker.ActiveKind.Should().Be(SegmentKind.Silence);
     }
 
     [Fact]
-    public void OnSample_WithSingleSilentSample_DoesNotEnterSilence()
+    public void OnSample_WithASingleQuietWindow_DoesNotEnterSilence()
     {
         // Arrange
-        SegmentTracker tracker = new(TestConfig);
+        SegmentTracker tracker = new(Immediate);
 
-        // Act — only 1 silent sample, need 2 for SilenceEnterPersistLoops
-        Segment? result = tracker.OnSample(MakeSample(-70.0, null, true, T0), null);
+        // Act
+        tracker.OnSample(Sample(T0, Quiet));
+
+        // Assert
+        tracker.ActiveKind.Should().NotBe(SegmentKind.Silence);
+    }
+
+    [Fact]
+    public void OnSample_InSilence_StaysUntilLoudAudioPersists()
+    {
+        // Arrange
+        SegmentTracker tracker = new(Immediate);
+        tracker.OnSample(Sample(T0, Quiet));
+        tracker.OnSample(Sample(T0.AddSeconds(10), Quiet));
+
+        // Act — a single loud window is not enough to leave
+        tracker.OnSample(Sample(T0.AddSeconds(20), Loud, "isrc:AAA", "Song A"));
+        SegmentKind? afterOne = tracker.ActiveKind;
+
+        tracker.OnSample(Sample(T0.AddSeconds(30), Loud, "isrc:AAA", "Song A"));
+
+        // Assert
+        afterOne.Should().Be(SegmentKind.Silence);
+        tracker.ActiveKind.Should().Be(SegmentKind.Song);
+    }
+
+    [Fact]
+    public void OnSample_InSilence_StaysThereWhileItRemainsQuiet()
+    {
+        // Arrange
+        SegmentTracker tracker = new(Immediate);
+        tracker.OnSample(Sample(T0, Quiet));
+        tracker.OnSample(Sample(T0.AddSeconds(10), Quiet));
+
+        // Act
+        Segment? result = tracker.OnSample(Sample(T0.AddSeconds(20), Quiet));
 
         // Assert
         result.Should().BeNull();
+        tracker.ActiveKind.Should().Be(SegmentKind.Silence);
+        tracker.ActiveStartUtc.Should().Be(T0.AddSeconds(10));
     }
 
     [Fact]
-    public void OnSample_InSilence_LoudSamplesExitAfterPersistLoops()
+    public void OnSample_LevelBetweenTheTwoThresholds_DoesNotFlapOutOfSilence()
     {
-        // Arrange — enter silence first
-        SegmentTracker tracker = new(TestConfig);
-        tracker.OnSample(MakeSample(-70.0, null, true, T0), null);
-        tracker.OnSample(MakeSample(-70.0, null, true, T0.AddSeconds(1)), null);
+        // Arrange — the gap between enter (-65) and exit (-60) is the hysteresis
+        SegmentTracker tracker = new(Immediate);
+        tracker.OnSample(Sample(T0, Quiet));
+        tracker.OnSample(Sample(T0.AddSeconds(10), Quiet));
 
-        // Act — need SilenceExitPersistLoops (2) loud samples to exit
-        Segment? r1 = tracker.OnSample(MakeSample(-30.0, null, true, T0.AddSeconds(2)), null);
-        Segment? r2 = tracker.OnSample(MakeSample(-30.0, null, true, T0.AddSeconds(3)), null);
+        // Act — -62 dBFS sits in the dead band
+        tracker.OnSample(Sample(T0.AddSeconds(20), -62.0));
+        tracker.OnSample(Sample(T0.AddSeconds(30), -62.0));
 
-        // Assert — r1 stays in silence (only 1 loud sample), returns null
-        r1.Should().BeNull();
-        // r2: exited silence, then falls through to leader/unknown evaluation
+        // Assert
+        tracker.ActiveKind.Should().Be(SegmentKind.Silence);
     }
 
     [Fact]
-    public void OnSample_InSilence_ContinuedQuietStaysInSilence()
+    public void OnSample_SilenceEndingInASong_FinalizesTheSilenceSegment()
     {
-        // Arrange — enter silence first
-        SegmentTracker tracker = new(TestConfig);
-        tracker.OnSample(MakeSample(-70.0, null, true, T0), null);
-        tracker.OnSample(MakeSample(-70.0, null, true, T0.AddSeconds(1)), null);
+        // Arrange
+        SegmentTracker tracker = new(Immediate);
+        tracker.OnSample(Sample(T0, Quiet));
+        tracker.OnSample(Sample(T0.AddSeconds(10), Quiet)); // silence starts here
 
-        // Act — more quiet samples
-        Segment? result = tracker.OnSample(MakeSample(-70.0, null, true, T0.AddSeconds(2)), null);
-
-        // Assert — stays in silence, returns null
-        result.Should().BeNull();
-    }
-
-    [Fact]
-    public void OnSample_SilenceReentry_AfterExit()
-    {
-        // Arrange — enter silence, then exit
-        SegmentTracker tracker = new(TestConfig);
-        tracker.OnSample(MakeSample(-70.0, null, true, T0), null);
-        tracker.OnSample(MakeSample(-70.0, null, true, T0.AddSeconds(1)), null);
-        // exit silence with 2 loud samples
-        tracker.OnSample(MakeSample(-30.0, null, true, T0.AddSeconds(2)), null);
-        tracker.OnSample(MakeSample(-30.0, null, true, T0.AddSeconds(3)), null);
-
-        // Act — re-enter silence with 2 quiet samples
-        tracker.OnSample(MakeSample(-70.0, null, true, T0.AddSeconds(4)), null);
-        Segment? result = tracker.OnSample(MakeSample(-70.0, null, true, T0.AddSeconds(5)), null);
-
-        // Assert — re-entered silence without exception; result depends on prior active state
-        // The key assertion is that the tracker handles re-entry gracefully
-    }
-
-    // --- Song detection ---
-
-    [Fact]
-    public void OnSample_WithLeaderAccepted_ReturnsNullForFirstSegment()
-    {
-        // Arrange — LeaderPersistLoops = 1, maxSamples = 1, so first eligible leader is accepted
-        SegmentTracker tracker = new(TestConfig);
+        tracker.OnSample(Sample(T0.AddSeconds(20), Loud, "isrc:AAA", "Song A"));
 
         // Act
-        Segment? result = tracker.OnSample(MakeSample(-30.0, "isrc:AAA", false, T0), "Song A");
+        Segment? finalized = tracker.OnSample(Sample(T0.AddSeconds(30), Loud, "isrc:AAA", "Song A"));
 
-        // Assert — first segment ever, no prior to finalize → returns null
+        // Assert
+        finalized.Should().NotBeNull();
+        finalized!.Kind.Should().Be(SegmentKind.Silence);
+        finalized.StartUtc.Should().Be(T0.AddSeconds(10));
+        finalized.Label.Should().Be("SILENCE");
+    }
+
+    // --- Songs ---
+
+    [Fact]
+    public void OnSample_WithAnAcceptedLeader_OpensASongSegment()
+    {
+        // Arrange
+        SegmentTracker tracker = new(Immediate);
+
+        // Act
+        Segment? result = tracker.OnSample(Sample(T0, Loud, "isrc:AAA", "Song A"));
+
+        // Assert — nothing to finalize yet, but the state has moved
         result.Should().BeNull();
+        tracker.ActiveKind.Should().Be(SegmentKind.Song);
+        tracker.ActiveSongKey.Should().Be("isrc:AAA");
     }
 
     [Fact]
-    public void OnSample_WithSongTransition_FinalizesPriorSong()
+    public void OnSample_WithASongTransition_FinalizesThePreviousSong()
     {
-        // Arrange — with maxSamples=1, each new sample instantly becomes the leader
-        SegmentTracker tracker = new(TestConfig);
-        tracker.OnSample(MakeSample(-30.0, "isrc:AAA", false, T0), "Song A");
+        // Arrange
+        SegmentTracker tracker = new(Immediate);
+        tracker.OnSample(Sample(T0, Loud, "isrc:AAA", "Song A"));
 
-        // Act — different song becomes leader immediately
-        Segment? result = tracker.OnSample(MakeSample(-30.0, "isrc:BBB", false, T0.AddSeconds(10)), "Song B");
+        // Act
+        Segment? result = tracker.OnSample(Sample(T0.AddSeconds(60), Loud, "isrc:BBB", "Song B"));
 
-        // Assert — finalizes Song A
+        // Assert
         result.Should().NotBeNull();
         result!.Kind.Should().Be(SegmentKind.Song);
         result.SongKey.Should().Be("isrc:AAA");
         result.DisplayText.Should().Be("Song A");
+        result.Duration.Should().Be(TimeSpan.FromSeconds(60));
+        tracker.ActiveSongKey.Should().Be("isrc:BBB");
     }
 
     [Fact]
-    public void OnSample_WithSameSongRepeated_DeduplicatesReturnsNull()
+    public void OnSample_AcrossATransition_LeavesNoGapInTheTimeline()
     {
         // Arrange
-        SegmentTracker tracker = new(TestConfig);
-        tracker.OnSample(MakeSample(-30.0, "isrc:AAA", false, T0), "Song A");
+        SegmentTracker tracker = new(Immediate);
+        tracker.OnSample(Sample(T0, Loud, "isrc:AAA", "Song A"));
 
         // Act
-        Segment? result = tracker.OnSample(MakeSample(-30.0, "isrc:AAA", false, T0.AddSeconds(5)), "Song A");
+        Segment? finalized = tracker.OnSample(Sample(T0.AddSeconds(60), Loud, "isrc:BBB", "Song B"));
 
-        // Assert — same song, dedup → null
-        result.Should().BeNull();
+        // Assert — the old segment ends exactly where the new one begins
+        finalized!.EndUtc.Should().Be(tracker.ActiveStartUtc!.Value);
     }
 
     [Fact]
-    public void OnSample_WithLeaderBelowMinShare_NotAccepted()
-    {
-        // Arrange — use multi-sample config where no-match dilutes the leader share
-        MonadConfig multiConfig = new()
-        {
-            RingBufferMaxSamples = 3,
-            RingBufferMaxAgeSeconds = 300,
-            VoteWeightsNewestToOldest = [1.0, 1.0, 1.0],
-            MinLeaderShare = 0.50,
-            LeaderPersistLoops = 1,
-            MinSegmentDurationSeconds = 0,
-            SilenceEnterDbfsThreshold = -65.0,
-            SilenceEnterPersistLoops = 99, // prevent silence gate
-            SilenceExitDbfsThreshold = -60.0,
-            SilenceExitPersistLoops = 1,
-            UnknownMinDbfs = -60.0,
-            UnknownPersistLoops = 99, // prevent unknown gate
-        };
-        SegmentTracker tracker = new(multiConfig);
-
-        // Fill buffer: 2 no-match + 1 song → leader share = 1/3 ≈ 0.33 < 0.50
-        tracker.OnSample(MakeSample(-30.0, null, true, T0), null);
-        tracker.OnSample(MakeSample(-30.0, null, true, T0.AddSeconds(1)), null);
-
-        // Act
-        Segment? result = tracker.OnSample(MakeSample(-30.0, "isrc:AAA", false, T0.AddSeconds(2)), "Song A");
-
-        // Assert — leader share below threshold, not accepted as song → null
-        result.Should().BeNull();
-    }
-
-    [Fact]
-    public void OnSample_WithDisplayText_PassedThroughToSegment()
+    public void OnSample_WithTheSameSongAgain_DoesNotStartANewSegment()
     {
         // Arrange
-        SegmentTracker tracker = new(TestConfig);
-        tracker.OnSample(MakeSample(-30.0, "isrc:AAA", false, T0), "First Song");
+        SegmentTracker tracker = new(Immediate);
+        tracker.OnSample(Sample(T0, Loud, "isrc:AAA", "Song A"));
 
-        // Act — different song → finalizes prior segment
-        Segment? result = tracker.OnSample(MakeSample(-30.0, "isrc:BBB", false, T0.AddSeconds(5)), "Second Song");
+        // Act
+        Segment? result = tracker.OnSample(Sample(T0.AddSeconds(20), Loud, "isrc:AAA", "Song A"));
 
         // Assert
-        result.Should().NotBeNull();
-        result!.DisplayText.Should().Be("First Song");
-    }
-
-    // --- Unknown detection ---
-
-    [Fact]
-    public void OnSample_WithScatteredNoMatch_ForPersistLoops_ReturnsUnknown()
-    {
-        // Arrange — need UnknownPersistLoops (2) consecutive eligible samples
-        SegmentTracker tracker = new(TestConfig);
-
-        // Act — loud no-match samples above UnknownMinDbfs
-        tracker.OnSample(MakeSample(-30.0, null, true, T0), null);
-        Segment? result = tracker.OnSample(MakeSample(-30.0, null, true, T0.AddSeconds(1)), null);
-
-        // Assert — unknownCount reaches 2, SwitchTo Unknown.
-        // First segment, no prior to finalize → returns null.
         result.Should().BeNull();
+        tracker.ActiveStartUtc.Should().Be(T0);
     }
 
     [Fact]
-    public void OnSample_WithAudioBelowUnknownMinDbfs_DoesNotTriggerUnknown()
+    public void OnSample_WithALeaderBelowMinShare_DoesNotOpenASongSegment()
     {
-        // Arrange — audio below UnknownMinDbfs (-60), but above silence threshold (-65)
-        SegmentTracker tracker = new(TestConfig);
+        // Arrange — two unrecognised windows dilute the one match to 1/3
+        MonadConfig config = Voting with { MinLeaderShare = 0.60, LeaderPersistLoops = 1 };
+        SegmentTracker tracker = new(config);
 
-        // Act — dbfs = -62, above silence enter (-65) but below unknown min (-60)
-        tracker.OnSample(MakeSample(-62.0, null, true, T0), null);
-        Segment? result = tracker.OnSample(MakeSample(-62.0, null, true, T0.AddSeconds(1)), null);
+        tracker.OnSample(Sample(T0, Loud));
+        tracker.OnSample(Sample(T0.AddSeconds(10), Loud));
 
-        // Assert — unknownCount resets because dbfs <= UnknownMinDbfs
-        result.Should().BeNull();
+        // Act
+        tracker.OnSample(Sample(T0.AddSeconds(20), Loud, "isrc:AAA", "Song A"));
+
+        // Assert
+        tracker.ActiveKind.Should().NotBe(SegmentKind.Song);
     }
 
     [Fact]
-    public void OnSample_WithConsistentSingleKey_NotUnknown()
+    public void OnSample_DatesTheSegmentFromWhenTheTrackWasFirstHeard()
     {
-        // Arrange — single consistent key, not scattered
-        SegmentTracker tracker = new(TestConfig);
+        // Arrange — recognition needs two loops to settle, but the song was
+        // already playing during the first one.
+        SegmentTracker tracker = new(Voting);
 
-        // Act — same key, strong leader accepted as Song, not Unknown
-        Segment? result = tracker.OnSample(MakeSample(-30.0, "isrc:AAA", false, T0), "Song A");
+        // Act
+        tracker.OnSample(Sample(T0, Loud, "isrc:AAA", "Song A"));
+        tracker.OnSample(Sample(T0.AddSeconds(15), Loud, "isrc:AAA", "Song A"));
 
-        // Assert — accepted as Song (LeaderPersistLoops=1), not Unknown
-        result.Should().BeNull(); // first segment, nothing to finalize
+        // Assert — dated from first contact, not from when the vote settled
+        tracker.ActiveKind.Should().Be(SegmentKind.Song);
+        tracker.ActiveStartUtc.Should().Be(T0);
     }
 
-    // --- Segment finalization ---
-
     [Fact]
-    public void OnSample_WithSegmentShorterThanMinDuration_DropsSegment()
+    public void OnSample_WhenTheDecidingWindowRecognisedNothing_StillNamesTheSegment()
     {
-        // Arrange — use config with MinSegmentDurationSeconds = 30
-        MonadConfig strictConfig = new()
+        // Arrange — the vote elects a track from earlier windows while the
+        // current one came back empty, which is entirely routine. The name has
+        // to survive that, or the segment is reported with no title at all.
+        SegmentTracker tracker = new(Voting);
+
+        tracker.OnSample(Sample(T0, Loud, "isrc:AAA", "Artist - Title [ISRC: AAA]"));
+        tracker.OnSample(Sample(T0.AddSeconds(15), Loud)); // no match: elects AAA anyway
+
+        tracker.ActiveKind.Should().Be(SegmentKind.Song);
+        tracker.ActiveSongKey.Should().Be("isrc:AAA");
+
+        // Act — play another track until it takes over and closes the first
+        Segment? finalized = null;
+
+        for (int i = 2; i <= 5 && finalized is null; i++)
         {
-            RingBufferMaxSamples = 1,
-            RingBufferMaxAgeSeconds = 300,
-            VoteWeightsNewestToOldest = [1.0],
-            MinLeaderShare = 0.50,
-            LeaderPersistLoops = 1,
-            MinSegmentDurationSeconds = 30,
-            SilenceEnterDbfsThreshold = -65.0,
-            SilenceEnterPersistLoops = 2,
-            SilenceExitDbfsThreshold = -60.0,
-            SilenceExitPersistLoops = 2,
-            UnknownMinDbfs = -60.0,
-            UnknownPersistLoops = 2,
-        };
-        SegmentTracker tracker = new(strictConfig);
-        tracker.OnSample(MakeSample(-30.0, "isrc:AAA", false, T0), "Song A");
+            finalized = tracker.OnSample(Sample(T0.AddSeconds(15 * i), Loud, "isrc:BBB", "Other"));
+        }
 
-        // Act — transition after only 5 seconds (< 30s min duration)
-        Segment? result = tracker.OnSample(MakeSample(-30.0, "isrc:BBB", false, T0.AddSeconds(5)), "Song B");
-
-        // Assert — prior segment too short, dropped
-        result.Should().BeNull();
+        // Assert
+        finalized.Should().NotBeNull();
+        finalized!.SongKey.Should().Be("isrc:AAA");
+        finalized.DisplayText.Should().Be("Artist - Title [ISRC: AAA]");
+        finalized.Label.Should().Be("Artist - Title [ISRC: AAA]");
     }
 
+    // --- Unknown ---
+
     [Fact]
-    public void OnSample_WithSegmentMeetingMinDuration_ReturnsFinalizedSegment()
+    public void OnSample_WithLoudButUnrecognisableAudio_BecomesUnknown()
     {
         // Arrange
-        SegmentTracker tracker = new(TestConfig); // MinSegmentDurationSeconds = 0
-        tracker.OnSample(MakeSample(-30.0, "isrc:AAA", false, T0), "Song A");
+        SegmentTracker tracker = new(Immediate);
 
-        // Act — transition to different song
-        DateTime endTime = T0.AddSeconds(60);
-        Segment? result = tracker.OnSample(MakeSample(-30.0, "isrc:BBB", false, endTime), "Song B");
+        // Act
+        tracker.OnSample(Sample(T0, Loud));
+        SegmentKind? afterOne = tracker.ActiveKind;
+
+        tracker.OnSample(Sample(T0.AddSeconds(10), Loud));
+
+        // Assert
+        afterOne.Should().NotBe(SegmentKind.Unknown);
+        tracker.ActiveKind.Should().Be(SegmentKind.Unknown);
+    }
+
+    [Fact]
+    public void OnSample_WithAudioTooQuietToCountAsPlaying_DoesNotBecomeUnknown()
+    {
+        // Arrange — below UnknownMinDbfs but above the silence threshold
+        SegmentTracker tracker = new(Immediate);
+
+        // Act
+        tracker.OnSample(Sample(T0, -62.0));
+        tracker.OnSample(Sample(T0.AddSeconds(10), -62.0));
+
+        // Assert
+        tracker.ActiveKind.Should().BeNull();
+    }
+
+    // --- Finalization ---
+
+    [Fact]
+    public void OnSample_WithASegmentShorterThanTheMinimum_DropsIt()
+    {
+        // Arrange
+        SegmentTracker tracker = new(Immediate with { MinSegmentDurationSeconds = 30 });
+        tracker.OnSample(Sample(T0, Loud, "isrc:AAA", "Song A"));
+
+        // Act — only five seconds later
+        Segment? result = tracker.OnSample(Sample(T0.AddSeconds(5), Loud, "isrc:BBB", "Song B"));
+
+        // Assert — dropped, but the tracker still moved on
+        result.Should().BeNull();
+        tracker.ActiveSongKey.Should().Be("isrc:BBB");
+    }
+
+    [Fact]
+    public void OnSample_WithASegmentMeetingTheMinimum_ReportsIt()
+    {
+        // Arrange
+        SegmentTracker tracker = new(Immediate with { MinSegmentDurationSeconds = 30 });
+        tracker.OnSample(Sample(T0, Loud, "isrc:AAA", "Song A"));
+
+        // Act
+        Segment? result = tracker.OnSample(Sample(T0.AddSeconds(45), Loud, "isrc:BBB", "Song B"));
 
         // Assert
         result.Should().NotBeNull();
         result!.StartUtc.Should().Be(T0);
-        result.EndUtc.Should().Be(endTime);
-        result.Kind.Should().Be(SegmentKind.Song);
+        result.EndUtc.Should().Be(T0.AddSeconds(45));
     }
 
+    // --- Flush ---
+
     [Fact]
-    public void OnSample_FirstSampleEver_NoPriorSegmentToFinalize()
+    public void Flush_ReportsTheSegmentStillInProgress()
     {
-        // Arrange
-        SegmentTracker tracker = new(TestConfig);
+        // Arrange — without this, whatever was playing when you stopped Monad
+        // was simply never reported.
+        SegmentTracker tracker = new(Immediate);
+        tracker.OnSample(Sample(T0, Loud, "isrc:AAA", "Song A"));
 
         // Act
-        Segment? result = tracker.OnSample(MakeSample(-30.0, "isrc:AAA", false, T0), "Song A");
+        Segment? last = tracker.Flush(T0.AddSeconds(90));
 
         // Assert
-        result.Should().BeNull();
+        last.Should().NotBeNull();
+        last!.SongKey.Should().Be("isrc:AAA");
+        last.DisplayText.Should().Be("Song A");
+        last.EndUtc.Should().Be(T0.AddSeconds(90));
+        tracker.ActiveKind.Should().BeNull();
     }
 
     [Fact]
-    public void OnSample_SilenceToSongTransition_FinalizesSilenceSegment()
+    public void Flush_WithNothingInProgress_ReturnsNull()
     {
-        // Arrange — enter silence
-        SegmentTracker tracker = new(TestConfig);
-        tracker.OnSample(MakeSample(-70.0, null, true, T0), null);
-        tracker.OnSample(MakeSample(-70.0, null, true, T0.AddSeconds(1)), null);
+        // Arrange
+        SegmentTracker tracker = new(Immediate);
 
-        // Exit silence with loud samples
-        tracker.OnSample(MakeSample(-30.0, null, true, T0.AddSeconds(2)), null);
-        tracker.OnSample(MakeSample(-30.0, null, true, T0.AddSeconds(3)), null);
+        // Act / Assert
+        tracker.Flush(T0).Should().BeNull();
+    }
 
-        // Act — add a song sample that should be accepted as leader
-        Segment? result = tracker.OnSample(MakeSample(-30.0, "isrc:AAA", false, T0.AddSeconds(4)), "Song A");
+    [Fact]
+    public void Flush_HonoursTheMinimumDuration()
+    {
+        // Arrange
+        SegmentTracker tracker = new(Immediate with { MinSegmentDurationSeconds = 30 });
+        tracker.OnSample(Sample(T0, Loud, "isrc:AAA", "Song A"));
 
-        // Assert — silence segment should be finalized (MinSegmentDurationSeconds = 0)
-        // After exiting silence, the active state may be silence or unknown.
-        // The song acceptance finalizes whatever was active.
-        // With unknown gate at 2 loops, after 2 loud no-match samples, unknown may have been entered.
-        // Then the song sample finalizes the unknown segment.
-        if (result is not null)
-        {
-            result.Kind.Should().BeOneOf(SegmentKind.Silence, SegmentKind.Unknown);
-        }
+        // Act / Assert
+        tracker.Flush(T0.AddSeconds(5)).Should().BeNull();
+    }
+
+    [Fact]
+    public void OnSample_WithNullSample_Throws()
+    {
+        // Arrange
+        SegmentTracker tracker = new(Immediate);
+
+        // Act / Assert
+        FluentActions.Invoking(() => tracker.OnSample(null!)).Should().Throw<ArgumentNullException>();
     }
 }

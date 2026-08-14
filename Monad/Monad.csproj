@@ -4,10 +4,75 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
+    <AssemblyName>monad</AssemblyName>
+    <RootNamespace>Monad</RootNamespace>
+    <Version>2.0.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="NAudio" Version="2.2.1" />
+    <!-- Windows loopback capture. Compiles everywhere, guarded at runtime, so
+         the Windows path keeps getting type-checked on macOS and Linux too. -->
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
   </ItemGroup>
+
+  <!-- ==================================================================
+       macOS capture sidecar.
+
+       System audio capture on macOS goes through Core Audio process taps,
+       whose API is Objective-C only, so it lives in a small Swift helper
+       that streams PCM to stdout. Building it needs the Xcode command line
+       tools; if they are missing the build warns rather than failing, so
+       the rest of the project still builds.
+
+       Pass -p:SkipAudioTapSidecar=true to skip it.
+       ================================================================== -->
+
+  <PropertyGroup>
+    <IsMacOsBuild Condition="$([MSBuild]::IsOSPlatform('OSX'))">true</IsMacOsBuild>
+    <AudioTapName>monad-audiotap</AudioTapName>
+    <!-- BaseIntermediateOutputPath, not IntermediateOutputPath: the latter is
+         only defined once the common targets are imported, which happens after
+         this runs, and an empty value would drop the binary in the source tree. -->
+    <AudioTapBinary>$(BaseIntermediateOutputPath)audiotap/$(AudioTapName)</AudioTapBinary>
+    <!-- Process taps require macOS 14.2. -->
+    <AudioTapDeploymentTarget>14.2</AudioTapDeploymentTarget>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(IsMacOsBuild)' == 'true'">
+    <AudioTapSource Include="$(MSBuildThisFileDirectory)..\native\macos\AudioTap\*.swift" />
+  </ItemGroup>
+
+  <Target Name="BuildAudioTapSidecar"
+          BeforeTargets="BeforeBuild"
+          Condition="'$(IsMacOsBuild)' == 'true' and '$(SkipAudioTapSidecar)' != 'true'"
+          Inputs="@(AudioTapSource)"
+          Outputs="$(AudioTapBinary)">
+    <MakeDir Directories="$(BaseIntermediateOutputPath)audiotap" />
+    <Exec Command="swiftc -O -target `uname -m`-apple-macos$(AudioTapDeploymentTarget) -o &quot;$(AudioTapBinary)&quot; @(AudioTapSource->'&quot;%(FullPath)&quot;', ' ')"
+          ContinueOnError="true">
+      <Output TaskParameter="ExitCode" PropertyName="AudioTapExitCode" />
+    </Exec>
+    <Warning Condition="'$(AudioTapExitCode)' != '0'"
+             Text="Could not build $(AudioTapName) (swiftc exited $(AudioTapExitCode)). Install the Xcode command line tools with 'xcode-select --install'; until then Monad cannot capture audio on this machine." />
+  </Target>
+
+  <!-- AfterTargets, not DependsOnTargets: a target whose own Condition is false
+       never runs its dependencies, and the binary cannot exist on a first build. -->
+  <Target Name="CopyAudioTapSidecar"
+          AfterTargets="BuildAudioTapSidecar"
+          Condition="Exists('$(AudioTapBinary)')"
+          Inputs="$(AudioTapBinary)"
+          Outputs="$(OutDir)$(AudioTapName)">
+    <Copy SourceFiles="$(AudioTapBinary)" DestinationFolder="$(OutDir)" />
+    <!-- Copy does not carry the executable bit across on Unix. -->
+    <Exec Command="chmod +x &quot;$(OutDir)$(AudioTapName)&quot;" />
+  </Target>
+
+  <Target Name="PublishAudioTapSidecar"
+          AfterTargets="Publish"
+          Condition="'$(IsMacOsBuild)' == 'true' and Exists('$(AudioTapBinary)')">
+    <Copy SourceFiles="$(AudioTapBinary)" DestinationFolder="$(PublishDir)" />
+    <Exec Command="chmod +x &quot;$(PublishDir)$(AudioTapName)&quot;" />
+  </Target>
 
 </Project>

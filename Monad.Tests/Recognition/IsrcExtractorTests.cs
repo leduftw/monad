@@ -1,358 +1,193 @@
-using FluentAssertions;
-using Monad.Recognition;
 using System.Text.Json;
+
+using FluentAssertions;
+
+using Monad.Recognition;
+
 using Xunit;
 
 namespace Monad.Tests.Recognition;
 
 public sealed class IsrcExtractorTests
 {
-    [Fact]
-    public void Extract_WithTopLevelIsrc_SelectsTopLevel()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""isrc"": ""USRC17607839"",
-            ""spotify"": { ""external_ids"": { ""isrc"": ""GBUM70000001"" } },
-            ""apple_music"": { ""isrc"": ""GBUM70000002"" }
-        }").RootElement;
+    private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
 
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
+    // --- Selection ---
+
+    [Fact]
+    public void Extract_WithATopLevelIsrc_SelectsIt()
+    {
+        // Arrange / Act
+        IsrcInfo info = IsrcExtractor.Extract(Parse("""{"isrc":"GBAYE0601498"}"""));
 
         // Assert
-        info.Selected.Should().Be("USRC17607839");
-        info.Spotify.Should().Be("GBUM70000001");
-        info.Apple.Should().Be("GBUM70000002");
-        info.Suffix.Should().Be("[ISRC: USRC17607839]");
+        info.Selected.Should().Be("GBAYE0601498");
+        info.TopLevel.Should().Be("GBAYE0601498");
+        info.Suffix.Should().Be("[ISRC: GBAYE0601498]");
+        info.HasMismatch.Should().BeFalse();
     }
 
     [Fact]
-    public void Extract_WithSpotifyIsrcOnly_SelectsSpotify()
+    public void Extract_WithOnlySpotify_SelectsSpotify()
     {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""spotify"": { ""external_ids"": { ""isrc"": ""GBUM70000001"" } }
-        }").RootElement;
-
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
+        // Arrange / Act
+        IsrcInfo info = IsrcExtractor.Extract(
+            Parse("""{"spotify":{"external_ids":{"isrc":"USRC19900468"}}}"""));
 
         // Assert
-        info.Selected.Should().Be("GBUM70000001");
-        info.Spotify.Should().Be("GBUM70000001");
-        info.Apple.Should().BeNull();
-        info.Suffix.Should().Be("[ISRC: GBUM70000001]");
+        info.Selected.Should().Be("USRC19900468");
+        info.Spotify.Should().Be("USRC19900468");
+        info.Suffix.Should().Be("[ISRC: USRC19900468]");
     }
 
     [Fact]
-    public void Extract_WithAppleIsrcOnly_SelectsApple()
+    public void Extract_WithOnlyAppleMusic_SelectsApple()
     {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""apple_music"": { ""isrc"": ""GBUM70000002"" }
-        }").RootElement;
-
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
+        // Arrange / Act
+        IsrcInfo info = IsrcExtractor.Extract(Parse("""{"apple_music":{"isrc":"FRZ036400450"}}"""));
 
         // Assert
-        info.Selected.Should().Be("GBUM70000002");
-        info.Spotify.Should().BeNull();
-        info.Apple.Should().Be("GBUM70000002");
-        info.Suffix.Should().Be("[ISRC: GBUM70000002]");
+        info.Selected.Should().Be("FRZ036400450");
+        info.Apple.Should().Be("FRZ036400450");
     }
 
     [Fact]
-    public void Extract_WithNoIsrc_ReturnsNullWithNaSuffix()
+    public void Extract_PrefersTheTopLevelCodeOverTheStores()
     {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": ""Unknown Artist"",
-            ""title"": ""Unknown Title""
-        }").RootElement;
+        // Arrange / Act
+        IsrcInfo info = IsrcExtractor.Extract(Parse(
+            """{"isrc":"AAA111111111","spotify":{"external_ids":{"isrc":"AAA111111111"}},"apple_music":{"isrc":"AAA111111111"}}"""));
 
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
+        // Assert
+        info.Selected.Should().Be("AAA111111111");
+        info.HasMismatch.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Extract_PrefersSpotifyOverAppleWhenThereIsNoTopLevelCode()
+    {
+        // Arrange / Act
+        IsrcInfo info = IsrcExtractor.Extract(Parse(
+            """{"spotify":{"external_ids":{"isrc":"SPO111111111"}},"apple_music":{"isrc":"SPO111111111"}}"""));
+
+        // Assert
+        info.Selected.Should().Be("SPO111111111");
+    }
+
+    [Fact]
+    public void Extract_UppercasesWhateverItFinds()
+    {
+        // Arrange / Act
+        IsrcInfo info = IsrcExtractor.Extract(Parse("""{"isrc":"gbaye0601498"}"""));
+
+        // Assert
+        info.Selected.Should().Be("GBAYE0601498");
+    }
+
+    [Fact]
+    public void Extract_WithNoIsrcAnywhere_ReportsNone()
+    {
+        // Arrange / Act
+        IsrcInfo info = IsrcExtractor.Extract(Parse("""{"artist":"Someone","title":"Something"}"""));
 
         // Assert
         info.Selected.Should().BeNull();
-        info.Spotify.Should().BeNull();
-        info.Apple.Should().BeNull();
+        info.Suffix.Should().Be("[ISRC: n/a]");
+        info.HasMismatch.Should().BeFalse();
+    }
+
+    // --- Mismatch detection ---
+
+    [Fact]
+    public void Extract_WhenSpotifyAndAppleDisagree_ReportsAMismatch()
+    {
+        // Arrange / Act
+        IsrcInfo info = IsrcExtractor.Extract(Parse(
+            """{"spotify":{"external_ids":{"isrc":"AAA111111111"}},"apple_music":{"isrc":"BBB222222222"}}"""));
+
+        // Assert
+        info.HasMismatch.Should().BeTrue();
+        info.Suffix.Should().Contain("mismatch").And.Contain("AAA111111111").And.Contain("BBB222222222");
+    }
+
+    [Fact]
+    public void Extract_WhenTheTopLevelCodeDisagreesWithAStore_ReportsAMismatch()
+    {
+        // Arrange — this used to go unnoticed: a top-level code short-circuited
+        // the comparison, so the disagreement was never looked for.
+        IsrcInfo info = IsrcExtractor.Extract(Parse(
+            """{"isrc":"AAA111111111","spotify":{"external_ids":{"isrc":"BBB222222222"}}}"""));
+
+        // Assert
+        info.HasMismatch.Should().BeTrue();
+        info.Selected.Should().Be("AAA111111111"); // still prefers the top-level code
+        info.Suffix.Should().Contain("result=AAA111111111").And.Contain("spotify=BBB222222222");
+    }
+
+    [Fact]
+    public void Extract_WithCodesDifferingOnlyInCase_DoesNotReportAMismatch()
+    {
+        // Arrange / Act
+        IsrcInfo info = IsrcExtractor.Extract(Parse(
+            """{"spotify":{"external_ids":{"isrc":"AAA111111111"}},"apple_music":{"isrc":"aaa111111111"}}"""));
+
+        // Assert
+        info.HasMismatch.Should().BeFalse();
+        info.Suffix.Should().Be("[ISRC: AAA111111111]");
+    }
+
+    // --- Malformed input ---
+
+    [Theory]
+    [InlineData("""{"isrc":12345}""")]
+    [InlineData("""{"isrc":true}""")]
+    [InlineData("""{"isrc":null}""")]
+    [InlineData("""{"isrc":{"value":"AAA"}}""")]
+    [InlineData("""{"isrc":["AAA"]}""")]
+    public void Extract_WithANonStringIsrc_DoesNotThrow(string json)
+    {
+        // Arrange — a field of the wrong type used to take the whole
+        // recognition loop down with an InvalidOperationException.
+        IsrcInfo info = IsrcExtractor.Extract(Parse(json));
+
+        // Assert
+        info.Selected.Should().BeNull();
         info.Suffix.Should().Be("[ISRC: n/a]");
     }
 
-    [Fact]
-    public void Extract_WithIsrcMismatch_ReturnsMismatchMessage()
+    [Theory]
+    [InlineData("""{"spotify":"not-an-object"}""")]
+    [InlineData("""{"spotify":{"external_ids":"not-an-object"}}""")]
+    [InlineData("""{"spotify":{"external_ids":{"isrc":42}}}""")]
+    [InlineData("""{"spotify":{}}""")]
+    [InlineData("""{"apple_music":"not-an-object"}""")]
+    [InlineData("""{"apple_music":{"isrc":42}}""")]
+    public void Extract_WithMalformedStoreData_DoesNotThrow(string json)
     {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""spotify"": { ""external_ids"": { ""isrc"": ""GBUM70000001"" } },
-            ""apple_music"": { ""isrc"": ""GBUM70000002"" }
-        }").RootElement;
+        IsrcExtractor.Extract(Parse(json)).Selected.Should().BeNull();
+    }
 
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
-
-        // Assert
-        info.Selected.Should().Be("GBUM70000001");
-        info.Spotify.Should().Be("GBUM70000001");
-        info.Apple.Should().Be("GBUM70000002");
-        info.Suffix.Should().Be("[ISRC mismatch: spotify=GBUM70000001, apple=GBUM70000002]");
+    [Theory]
+    [InlineData("""{"isrc":""}""")]
+    [InlineData("""{"isrc":"   "}""")]
+    public void Extract_WithABlankIsrc_TreatsItAsAbsent(string json)
+    {
+        IsrcExtractor.Extract(Parse(json)).Selected.Should().BeNull();
     }
 
     [Fact]
-    public void Extract_WithIsrcMatch_ReturnsSingleMessage()
+    public void Extract_TrimsSurroundingWhitespace()
     {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""spotify"": { ""external_ids"": { ""isrc"": ""GBUM70000001"" } },
-            ""apple_music"": { ""isrc"": ""GBUM70000001"" }
-        }").RootElement;
-
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
-
-        // Assert
-        info.Selected.Should().Be("GBUM70000001");
-        info.Spotify.Should().Be("GBUM70000001");
-        info.Apple.Should().Be("GBUM70000001");
-        info.Suffix.Should().Be("[ISRC: GBUM70000001]");
+        IsrcExtractor.Extract(Parse("""{"isrc":"  GBAYE0601498  "}""")).Selected.Should().Be("GBAYE0601498");
     }
 
-    [Fact]
-    public void Extract_WithWhitespaceOnlyIsrc_TreatsAsNull()
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("\"a string\"")]
+    [InlineData("42")]
+    [InlineData("null")]
+    public void Extract_WithSomethingOtherThanAnObject_ReportsNone(string json)
     {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""isrc"": ""   "",
-            ""spotify"": { ""external_ids"": { ""isrc"": ""GBUM70000001"" } }
-        }").RootElement;
-
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
-
-        // Assert
-        info.Selected.Should().Be("GBUM70000001");
-        info.Spotify.Should().Be("GBUM70000001");
-        info.Suffix.Should().Be("[ISRC: GBUM70000001]");
-    }
-
-    [Fact]
-    public void Extract_WithMissingSpotifyObject_HandlesGracefully()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""isrc"": ""USRC17607839""
-        }").RootElement;
-
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
-
-        // Assert
-        info.Selected.Should().Be("USRC17607839");
-        info.Spotify.Should().BeNull();
-        info.Apple.Should().BeNull();
-    }
-
-    [Fact]
-    public void Extract_WithSpotifyNotAnObject_HandlesGracefully()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""spotify"": ""not an object"",
-            ""apple_music"": { ""isrc"": ""GBUM70000002"" }
-        }").RootElement;
-
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
-
-        // Assert
-        info.Selected.Should().Be("GBUM70000002");
-        info.Spotify.Should().BeNull();
-        info.Apple.Should().Be("GBUM70000002");
-    }
-
-    [Fact]
-    public void Extract_WithMissingExternalIds_HandlesGracefully()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""spotify"": { ""other_field"": ""value"" },
-            ""apple_music"": { ""isrc"": ""GBUM70000002"" }
-        }").RootElement;
-
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
-
-        // Assert
-        info.Selected.Should().Be("GBUM70000002");
-        info.Spotify.Should().BeNull();
-        info.Apple.Should().Be("GBUM70000002");
-    }
-
-    [Fact]
-    public void Extract_WithSpotifyIsrcNotString_HandlesGracefully()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""spotify"": { ""external_ids"": { ""isrc"": 12345 } },
-            ""apple_music"": { ""isrc"": ""GBUM70000002"" }
-        }").RootElement;
-
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
-
-        // Assert
-        info.Selected.Should().Be("GBUM70000002");
-        info.Spotify.Should().BeNull();
-        info.Apple.Should().Be("GBUM70000002");
-    }
-
-    [Fact]
-    public void Extract_WithAppleNotAnObject_HandlesGracefully()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""spotify"": { ""external_ids"": { ""isrc"": ""GBUM70000001"" } },
-            ""apple_music"": 123
-        }").RootElement;
-
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
-
-        // Assert
-        info.Selected.Should().Be("GBUM70000001");
-        info.Spotify.Should().Be("GBUM70000001");
-        info.Apple.Should().BeNull();
-    }
-
-    [Fact]
-    public void Extract_WithAppleIsrcNotString_HandlesGracefully()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""spotify"": { ""external_ids"": { ""isrc"": ""GBUM70000001"" } },
-            ""apple_music"": { ""isrc"": null }
-        }").RootElement;
-
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
-
-        // Assert
-        info.Selected.Should().Be("GBUM70000001");
-        info.Spotify.Should().Be("GBUM70000001");
-        info.Apple.Should().BeNull();
-    }
-
-    [Fact]
-    public void Extract_WithAllThreeSources_PrefersTopLevel()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""isrc"": ""TOPLEVL001"",
-            ""spotify"": { ""external_ids"": { ""isrc"": ""SPOTIFYRC"" } },
-            ""apple_music"": { ""isrc"": ""APPLEISRC"" }
-        }").RootElement;
-
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
-
-        // Assert
-        info.Selected.Should().Be("TOPLEVL001");
-        info.Spotify.Should().Be("SPOTIFYRC");
-        info.Apple.Should().Be("APPLEISRC");
-        info.Suffix.Should().Be("[ISRC: TOPLEVL001]");
-    }
-
-    [Fact]
-    public void Extract_WithTopLevelAndSpotify_PrefersTopLevel()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""isrc"": ""TOPLEVL001"",
-            ""spotify"": { ""external_ids"": { ""isrc"": ""SPOTIFYRC"" } }
-        }").RootElement;
-
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
-
-        // Assert
-        info.Selected.Should().Be("TOPLEVL001");
-        info.Spotify.Should().Be("SPOTIFYRC");
-        info.Apple.Should().BeNull();
-        info.Suffix.Should().Be("[ISRC: TOPLEVL001]");
-    }
-
-    [Fact]
-    public void Extract_WithSpotifyAndApple_PrefersSpotify()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""spotify"": { ""external_ids"": { ""isrc"": ""SPOTIFYRC"" } },
-            ""apple_music"": { ""isrc"": ""APPLEISRC"" }
-        }").RootElement;
-
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
-
-        // Assert
-        info.Selected.Should().Be("SPOTIFYRC");
-        info.Spotify.Should().Be("SPOTIFYRC");
-        info.Apple.Should().Be("APPLEISRC");
-    }
-
-    [Fact]
-    public void Extract_WithCaseSensitiveMismatchComparison_IgnoresCase()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""spotify"": { ""external_ids"": { ""isrc"": ""GbUm70000001"" } },
-            ""apple_music"": { ""isrc"": ""GBUM70000001"" }
-        }").RootElement;
-
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
-
-        // Assert
-        info.Selected.Should().Be("GBUM70000001");
-        info.Spotify.Should().Be("GBUM70000001");
-        info.Apple.Should().Be("GBUM70000001");
-        info.Suffix.Should().Be("[ISRC: GBUM70000001]");
-    }
-
-    [Fact]
-    public void Extract_WithTopLevelAndMismatchedSpotifyApple_PrefersTopLevelSuffix()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""isrc"": ""TOPLEVL001"",
-            ""spotify"": { ""external_ids"": { ""isrc"": ""SPOTIFYRC"" } },
-            ""apple_music"": { ""isrc"": ""APPLEISRC"" }
-        }").RootElement;
-
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
-
-        // Assert
-        info.Selected.Should().Be("TOPLEVL001");
-        info.Suffix.Should().Be("[ISRC: TOPLEVL001]");
-    }
-
-    [Fact]
-    public void Extract_WithEmptyStringIsrc_TreatsAsNull()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""isrc"": """",
-            ""spotify"": { ""external_ids"": { ""isrc"": ""GBUM70000001"" } }
-        }").RootElement;
-
-        // Act
-        IsrcInfo info = IsrcExtractor.Extract(result);
-
-        // Assert
-        info.Selected.Should().Be("GBUM70000001");
-        info.Spotify.Should().Be("GBUM70000001");
+        IsrcExtractor.Extract(Parse(json)).Should().BeSameAs(IsrcInfo.None);
     }
 }

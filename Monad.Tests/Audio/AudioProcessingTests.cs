@@ -1,5 +1,9 @@
+using System;
+
 using FluentAssertions;
+
 using Monad.Audio;
+
 using Xunit;
 
 namespace Monad.Tests.Audio;
@@ -9,233 +13,243 @@ public sealed class AudioProcessingTests
     // --- DownmixToMono ---
 
     [Fact]
-    public void DownmixToMono_WithMonoInput_ReturnsSameReference()
-    {
-        // Arrange
-        short[] input = [10, 20, 30];
-
-        // Act
-        short[] result = AudioProcessing.DownmixToMono(input, channels: 1);
-
-        // Assert
-        result.Should().BeSameAs(input);
-    }
-
-    [Fact]
-    public void DownmixToMono_WithZeroChannels_ReturnsSameReference()
-    {
-        // Arrange
-        short[] input = [10, 20, 30];
-
-        // Act
-        short[] result = AudioProcessing.DownmixToMono(input, channels: 0);
-
-        // Assert
-        result.Should().BeSameAs(input);
-    }
-
-    [Fact]
     public void DownmixToMono_WithStereoInput_AveragesChannels()
     {
         // Arrange
-        short[] input = [100, 200, -50, 50];
+        float[] interleaved = [1.0f, 0.0f, 0.5f, -0.5f];
+        float[] mono = new float[2];
 
         // Act
-        short[] result = AudioProcessing.DownmixToMono(input, channels: 2);
+        int frames = AudioProcessing.DownmixToMono(interleaved, channels: 2, mono);
 
         // Assert
-        result.Should().Equal((short)150, (short)0);
+        frames.Should().Be(2);
+        mono[0].Should().BeApproximately(0.5f, 1e-6f);
+        mono[1].Should().BeApproximately(0.0f, 1e-6f);
+    }
+
+    [Fact]
+    public void DownmixToMono_WithMonoInput_CopiesUnchanged()
+    {
+        // Arrange
+        float[] interleaved = [0.25f, -0.75f];
+        float[] mono = new float[2];
+
+        // Act
+        int frames = AudioProcessing.DownmixToMono(interleaved, channels: 1, mono);
+
+        // Assert
+        frames.Should().Be(2);
+        mono.Should().Equal(0.25f, -0.75f);
     }
 
     [Fact]
     public void DownmixToMono_WithSixChannels_AveragesAllChannels()
     {
-        // Arrange — 6 channels, 1 frame: sum=900, avg=150
-        short[] input = [600, 300, 0, -300, 150, 150];
+        // Arrange — one frame of 5.1, values summing to 3.0
+        float[] interleaved = [1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f];
+        float[] mono = new float[1];
 
         // Act
-        short[] result = AudioProcessing.DownmixToMono(input, channels: 6);
+        AudioProcessing.DownmixToMono(interleaved, channels: 6, mono);
 
         // Assert
-        result.Should().Equal((short)150);
+        mono[0].Should().BeApproximately(0.5f, 1e-6f);
     }
 
     [Fact]
-    public void DownmixToMono_WithMaxPositiveValues_ClampsToShortMax()
+    public void DownmixToMono_WithIncompleteTrailingFrame_IgnoresIt()
+    {
+        // Arrange — five samples of stereo is two whole frames plus a stray
+        float[] interleaved = [1.0f, 1.0f, 0.5f, 0.5f, 0.9f];
+        float[] mono = new float[4];
+
+        // Act
+        int frames = AudioProcessing.DownmixToMono(interleaved, channels: 2, mono);
+
+        // Assert
+        frames.Should().Be(2);
+    }
+
+    [Fact]
+    public void DownmixToMono_WithEmptyInput_WritesNothing()
+    {
+        // Arrange / Act
+        int frames = AudioProcessing.DownmixToMono([], channels: 2, new float[4]);
+
+        // Assert
+        frames.Should().Be(0);
+    }
+
+    [Fact]
+    public void DownmixToMono_WithDestinationTooSmall_Throws()
     {
         // Arrange
-        short[] input = [short.MaxValue, short.MaxValue];
+        float[] interleaved = [1f, 1f, 1f, 1f];
 
         // Act
-        short[] result = AudioProcessing.DownmixToMono(input, channels: 2);
+        Action act = () => AudioProcessing.DownmixToMono(interleaved, channels: 2, new float[1]);
 
         // Assert
-        result.Should().Equal(short.MaxValue);
+        act.Should().Throw<ArgumentException>();
     }
 
-    [Fact]
-    public void DownmixToMono_WithMaxNegativeValues_ClampsToShortMin()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void DownmixToMono_WithNonPositiveChannels_Throws(int channels)
     {
-        // Arrange
-        short[] input = [short.MinValue, short.MinValue];
-
-        // Act
-        short[] result = AudioProcessing.DownmixToMono(input, channels: 2);
+        // Arrange / Act
+        Action act = () => AudioProcessing.DownmixToMono([1f], channels, new float[1]);
 
         // Assert
-        result.Should().Equal(short.MinValue);
-    }
-
-    [Fact]
-    public void DownmixToMono_WithEmptyArray_ReturnsEmptyArray()
-    {
-        // Arrange
-        short[] input = [];
-
-        // Act
-        short[] result = AudioProcessing.DownmixToMono(input, channels: 2);
-
-        // Assert
-        result.Should().BeEmpty();
-    }
-
-    // --- NormalizeOnlyBoost ---
-
-    [Fact]
-    public void NormalizeOnlyBoost_WithEmptyArray_ReturnsSameReference()
-    {
-        // Arrange
-        short[] input = [];
-
-        // Act
-        short[] result = AudioProcessing.NormalizeOnlyBoost(input, peakTarget: 0.9f);
-
-        // Assert
-        result.Should().BeSameAs(input);
-    }
-
-    [Fact]
-    public void NormalizeOnlyBoost_WithAllZeros_ReturnsSameReference()
-    {
-        // Arrange
-        short[] input = [0, 0, 0];
-
-        // Act
-        short[] result = AudioProcessing.NormalizeOnlyBoost(input, peakTarget: 0.9f);
-
-        // Assert
-        result.Should().BeSameAs(input);
-    }
-
-    [Fact]
-    public void NormalizeOnlyBoost_WithPeakAtTarget_ReturnsSameReference()
-    {
-        // Arrange — peak = 32767, target = 1.0 → scale = 1.0
-        short[] input = [short.MaxValue, 0, -100];
-
-        // Act
-        short[] result = AudioProcessing.NormalizeOnlyBoost(input, peakTarget: 1.0f);
-
-        // Assert
-        result.Should().BeSameAs(input);
-    }
-
-    [Fact]
-    public void NormalizeOnlyBoost_WithPeakAboveTarget_ReturnsSameReference()
-    {
-        // Arrange — peak = 32767, target = 0.5 → scale < 1.0 → no attenuation
-        short[] input = [short.MaxValue, 0];
-
-        // Act
-        short[] result = AudioProcessing.NormalizeOnlyBoost(input, peakTarget: 0.5f);
-
-        // Assert
-        result.Should().BeSameAs(input);
-    }
-
-    [Fact]
-    public void NormalizeOnlyBoost_WithPeakBelowTarget_BoostsValues()
-    {
-        // Arrange — peak = 1000, target = 1.0 → targetPeak = 32767, scale = 32.767
-        // value 1000 * 32.767 = 32767
-        short[] input = [1000];
-
-        // Act
-        short[] result = AudioProcessing.NormalizeOnlyBoost(input, peakTarget: 1.0f);
-
-        // Assert
-        result.Should().NotBeSameAs(input);
-        result[0].Should().Be(short.MaxValue);
-    }
-
-    [Fact]
-    public void NormalizeOnlyBoost_WithBoostCausingOverflow_ClampsToShortRange()
-    {
-        // Arrange — peak = 100, target = 1.0 → scale = 327.67
-        // value -100 * 327.67 = -32767
-        short[] input = [100, -100];
-
-        // Act
-        short[] result = AudioProcessing.NormalizeOnlyBoost(input, peakTarget: 1.0f);
-
-        // Assert
-        result[0].Should().BeGreaterThanOrEqualTo(short.MinValue);
-        result[0].Should().BeLessThanOrEqualTo(short.MaxValue);
-        result[1].Should().BeGreaterThanOrEqualTo(short.MinValue);
-        result[1].Should().BeLessThanOrEqualTo(short.MaxValue);
+        act.Should().Throw<ArgumentOutOfRangeException>();
     }
 
     // --- RmsDbfs ---
 
     [Fact]
-    public void RmsDbfs_WithEmptyArray_ReturnsNegative999()
+    public void RmsDbfs_WithEmptyInput_ReturnsSilenceFloor()
+    {
+        AudioProcessing.RmsDbfs([]).Should().Be(AudioProcessing.SilenceFloorDbfs);
+    }
+
+    [Fact]
+    public void RmsDbfs_WithDigitalSilence_ReturnsSilenceFloor()
+    {
+        AudioProcessing.RmsDbfs(new float[512]).Should().Be(AudioProcessing.SilenceFloorDbfs);
+    }
+
+    [Fact]
+    public void RmsDbfs_WithFullScaleSquareWave_ReturnsApproximatelyZero()
+    {
+        // Arrange — alternating ±1 has an RMS of exactly 1.0
+        float[] samples = new float[256];
+        for (int i = 0; i < samples.Length; i++)
+        {
+            samples[i] = i % 2 == 0 ? 1f : -1f;
+        }
+
+        // Act / Assert
+        AudioProcessing.RmsDbfs(samples).Should().BeApproximately(0.0, 0.01);
+    }
+
+    [Fact]
+    public void RmsDbfs_WithHalfScaleSignal_ReturnsAboutMinusSixDb()
+    {
+        // Arrange — RMS of 0.5 is 20*log10(0.5) ≈ -6.02 dBFS
+        float[] samples = new float[256];
+        Array.Fill(samples, 0.5f);
+
+        // Act / Assert
+        AudioProcessing.RmsDbfs(samples).Should().BeApproximately(-6.02, 0.01);
+    }
+
+    [Fact]
+    public void RmsDbfs_NeverReportsBelowTheSilenceFloor()
+    {
+        // Arrange — quieter than 16-bit can represent
+        float[] samples = new float[64];
+        Array.Fill(samples, 1e-9f);
+
+        // Act / Assert — a finite floor keeps comparisons and JSON output sane
+        AudioProcessing.RmsDbfs(samples).Should().Be(AudioProcessing.SilenceFloorDbfs);
+    }
+
+    // --- Peak ---
+
+    [Fact]
+    public void Peak_ReturnsLargestMagnitude()
+    {
+        AudioProcessing.Peak([0.1f, -0.8f, 0.3f]).Should().BeApproximately(0.8f, 1e-6f);
+    }
+
+    [Fact]
+    public void Peak_WithEmptyInput_ReturnsZero()
+    {
+        AudioProcessing.Peak([]).Should().Be(0f);
+    }
+
+    // --- BoostToPeak ---
+
+    [Fact]
+    public void BoostToPeak_WithQuietAudio_ScalesUpToTarget()
     {
         // Arrange
-        short[] input = [];
+        float[] samples = [0.1f, -0.05f];
 
         // Act
-        double result = AudioProcessing.RmsDbfs(input);
+        AudioProcessing.BoostToPeak(samples, peakTarget: 0.9f);
 
         // Assert
-        result.Should().Be(-999.0);
+        AudioProcessing.Peak(samples).Should().BeApproximately(0.9f, 1e-5f);
+        samples[1].Should().BeApproximately(-0.45f, 1e-5f); // ratio preserved
     }
 
     [Fact]
-    public void RmsDbfs_WithSilence_ReturnsNegative999()
+    public void BoostToPeak_WithAudioAlreadyLouderThanTarget_LeavesItAlone()
+    {
+        // Arrange — boosting only ever raises quiet audio, so it cannot clip
+        float[] samples = [0.95f, -0.5f];
+        float[] original = (float[])samples.Clone();
+
+        // Act
+        AudioProcessing.BoostToPeak(samples, peakTarget: 0.9f);
+
+        // Assert
+        samples.Should().Equal(original);
+    }
+
+    [Fact]
+    public void BoostToPeak_WithDigitalSilence_LeavesItAlone()
     {
         // Arrange
-        short[] input = [0, 0, 0, 0];
+        float[] samples = new float[8];
 
         // Act
-        double result = AudioProcessing.RmsDbfs(input);
+        AudioProcessing.BoostToPeak(samples, peakTarget: 0.9f);
 
         // Assert
-        result.Should().Be(-999.0);
+        samples.Should().AllSatisfy(sample => sample.Should().Be(0f));
     }
 
     [Fact]
-    public void RmsDbfs_WithFullScaleSignal_ReturnsApproximatelyZeroDbfs()
+    public void BoostToPeak_NeverExceedsFullScale()
     {
-        // Arrange — constant signal at max value: RMS = 32767/32768 ≈ ~0 dBFS
-        short[] input = [short.MaxValue, short.MaxValue, short.MaxValue, short.MaxValue];
+        // Arrange
+        float[] samples = [0.001f, -0.001f];
 
         // Act
-        double result = AudioProcessing.RmsDbfs(input);
+        AudioProcessing.BoostToPeak(samples, peakTarget: 1.0f);
 
         // Assert
-        result.Should().BeApproximately(0.0, 0.1);
+        samples.Should().AllSatisfy(sample => Math.Abs(sample).Should().BeLessThanOrEqualTo(1f));
     }
 
     [Fact]
-    public void RmsDbfs_WithKnownSignal_ReturnsExpectedLevel()
+    public void BoostToPeak_WithNonPositiveTarget_Throws()
     {
-        // Arrange — value 3277 ≈ 10% of 32768 → RMS = 3277/32768 ≈ 0.1 → 20*log10(0.1) ≈ -20 dBFS
-        short[] input = [3277, 3277, 3277, 3277];
-
-        // Act
-        double result = AudioProcessing.RmsDbfs(input);
+        // Arrange / Act
+        Action act = () => AudioProcessing.BoostToPeak(new float[4], peakTarget: 0f);
 
         // Assert
-        result.Should().BeApproximately(-20.0, 0.1);
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void BoostToPeak_DoesNotChangeTheLevelOfAlreadyLoudAudio()
+    {
+        // Arrange — guards the ordering bug this pipeline used to have: levels
+        // must be measured before boosting, because boosting rewrites them.
+        float[] quiet = new float[256];
+        Array.Fill(quiet, 0.001f);
+
+        double before = AudioProcessing.RmsDbfs(quiet);
+        AudioProcessing.BoostToPeak(quiet, peakTarget: 0.9f);
+        double after = AudioProcessing.RmsDbfs(quiet);
+
+        // Assert — nearly 60 dB of difference, which is why the order matters
+        before.Should().BeLessThan(-55.0);
+        after.Should().BeGreaterThan(-2.0);
     }
 }

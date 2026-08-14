@@ -1,220 +1,122 @@
-﻿using FluentAssertions;
+using System;
+
+using FluentAssertions;
+
 using Monad.Recognition;
+
 using Xunit;
 
 namespace Monad.Tests.Recognition;
 
 public sealed class SongKeyTests
 {
+    private static RecognitionResult Result(string artist, string title, string? isrc = null) =>
+        new(artist, title, isrc is null ? IsrcInfo.None : IsrcInfo.None with { Selected = isrc });
+
+    // --- ISRC keys ---
+
     [Fact]
-    public void FromResult_WithValidIsrc_ReturnsIsrcFormattedKey()
+    public void FromResult_WithAnIsrc_BuildsAnIsrcKey()
     {
-        // Arrange
-        IsrcInfo isrcInfo = new(Selected: "US1234567890", Spotify: null, Apple: null, Suffix: "");
-        RecognitionResult result = new(Artist: "Artist", Title: "Title", IsrcInfo: isrcInfo);
-
-        // Act
-        string? songKey = SongKey.FromResult(result);
-
-        // Assert
-        songKey.Should().Be("isrc:US1234567890");
+        SongKey.FromResult(Result("Artist", "Title", "GBAYE0601498"))
+            .Should().Be("isrc:GBAYE0601498");
     }
 
     [Fact]
-    public void FromResult_WithIsrcContainingWhitespace_TrimsAndUppercases()
+    public void FromResult_PrefersIsrcOverArtistAndTitle()
     {
-        // Arrange
-        IsrcInfo isrcInfo = new(Selected: "  us1234567890  ", Spotify: null, Apple: null, Suffix: "");
-        RecognitionResult result = new(Artist: "Artist", Title: "Title", IsrcInfo: isrcInfo);
-
-        // Act
-        string? songKey = SongKey.FromResult(result);
+        // Arrange — the same recording under two spellings must share a key
+        string? one = SongKey.FromResult(Result("The Beatles", "Hey Jude", "GBAYE0601498"));
+        string? other = SongKey.FromResult(Result("Beatles, The", "Hey Jude (Remastered)", "GBAYE0601498"));
 
         // Assert
-        songKey.Should().Be("isrc:US1234567890");
+        one.Should().Be(other);
     }
 
     [Fact]
-    public void FromResult_WithNullIsrc_UsesArtistAndTitle()
+    public void FromResult_UppercasesAndTrimsTheIsrc()
     {
-        // Arrange
-        IsrcInfo isrcInfo = new(Selected: null, Spotify: null, Apple: null, Suffix: "");
-        RecognitionResult result = new(Artist: "Grace Jones", Title: "I've Done It Again", IsrcInfo: isrcInfo);
-
-        // Act
-        string? songKey = SongKey.FromResult(result);
-
-        // Assert
-        songKey.Should().Be("text:GRACE JONES|I'VE DONE IT AGAIN");
+        SongKey.FromResult(Result("Artist", "Title", "  gbaye0601498  "))
+            .Should().Be("isrc:GBAYE0601498");
     }
 
     [Fact]
-    public void FromResult_WithWhitespaceOnlyIsrc_UsesArtistAndTitle()
+    public void FromResult_WithABlankIsrc_FallsBackToArtistAndTitle()
     {
-        // Arrange
-        IsrcInfo isrcInfo = new(Selected: "   ", Spotify: null, Apple: null, Suffix: "");
-        RecognitionResult result = new(Artist: "Pink Floyd", Title: "Time", IsrcInfo: isrcInfo);
+        SongKey.FromResult(Result("Artist", "Title", "   "))
+            .Should().Be("text:ARTIST|TITLE");
+    }
 
-        // Act
-        string? songKey = SongKey.FromResult(result);
+    // --- Text keys ---
 
-        // Assert
-        songKey.Should().Be("text:PINK FLOYD|TIME");
+    [Fact]
+    public void FromResult_WithoutAnIsrc_BuildsATextKey()
+    {
+        SongKey.FromResult(Result("Nina Simone", "Feeling Good"))
+            .Should().Be("text:NINA SIMONE|FEELING GOOD");
     }
 
     [Fact]
-    public void FromResult_WithArtistAndTitleWhitespace_TrimsAndUppercases()
+    public void FromResult_UppercasesTextKeys()
     {
-        // Arrange
-        IsrcInfo isrcInfo = new(Selected: null, Spotify: null, Apple: null, Suffix: "");
-        RecognitionResult result = new(Artist: "  Depeche Mode  ", Title: "  Lie to Me  ", IsrcInfo: isrcInfo);
-
-        // Act
-        string? songKey = SongKey.FromResult(result);
-
-        // Assert
-        songKey.Should().Be("text:DEPECHE MODE|LIE TO ME");
+        // Arrange — matching is case-insensitive, so the key is normalised once
+        SongKey.FromResult(Result("nina simone", "feeling good"))
+            .Should().Be("text:NINA SIMONE|FEELING GOOD");
     }
 
     [Fact]
-    public void FromResult_WithEmptyArtistAndTitle_ReturnsNull()
+    public void FromResult_TrimsArtistAndTitle()
     {
-        // Arrange
-        IsrcInfo isrcInfo = new(Selected: null, Spotify: null, Apple: null, Suffix: "");
-        RecognitionResult result = new(Artist: "", Title: "", IsrcInfo: isrcInfo);
-
-        // Act
-        string? songKey = SongKey.FromResult(result);
-
-        // Assert
-        songKey.Should().BeNull();
+        SongKey.FromResult(Result("  Artist  ", "  Title  "))
+            .Should().Be("text:ARTIST|TITLE");
     }
 
     [Fact]
-    public void FromResult_WithNullArtistAndTitle_ReturnsNull()
+    public void FromResult_WithOnlyAnArtist_StillBuildsAKey()
     {
-        // Arrange
-        IsrcInfo isrcInfo = new(Selected: null, Spotify: null, Apple: null, Suffix: "");
-        RecognitionResult result = new(Artist: null!, Title: null!, IsrcInfo: isrcInfo);
-
-        // Act
-        string? songKey = SongKey.FromResult(result);
-
-        // Assert
-        songKey.Should().BeNull();
+        SongKey.FromResult(Result("Artist", string.Empty)).Should().Be("text:ARTIST|");
     }
 
     [Fact]
-    public void FromResult_WithWhitespaceOnlyArtistAndTitle_ReturnsNull()
+    public void FromResult_WithOnlyATitle_StillBuildsAKey()
     {
-        // Arrange
-        IsrcInfo isrcInfo = new(Selected: null, Spotify: null, Apple: null, Suffix: "");
-        RecognitionResult result = new(Artist: "   ", Title: "   ", IsrcInfo: isrcInfo);
+        SongKey.FromResult(Result(string.Empty, "Title")).Should().Be("text:|TITLE");
+    }
 
-        // Act
-        string? songKey = SongKey.FromResult(result);
+    [Theory]
+    [InlineData("", "")]
+    [InlineData("   ", "   ")]
+    public void FromResult_WithNothingToIdentifyIt_ReturnsNull(string artist, string title)
+    {
+        SongKey.FromResult(Result(artist, title)).Should().BeNull();
+    }
 
-        // Assert
-        songKey.Should().BeNull();
+    // --- Scripts and punctuation ---
+
+    [Fact]
+    public void FromResult_HandlesCyrillic()
+    {
+        SongKey.FromResult(Result("Бијело Дугме", "Ђурђевдан"))
+            .Should().Be("text:БИЈЕЛО ДУГМЕ|ЂУРЂЕВДАН");
     }
 
     [Fact]
-    public void FromResult_WithOnlyArtist_ReturnsFormattedKey()
+    public void FromResult_HandlesSerbianDiacritics()
     {
-        // Arrange
-        IsrcInfo isrcInfo = new(Selected: null, Spotify: null, Apple: null, Suffix: "");
-        RecognitionResult result = new(Artist: "Eartha Kitt", Title: "", IsrcInfo: isrcInfo);
-
-        // Act
-        string? songKey = SongKey.FromResult(result);
-
-        // Assert
-        songKey.Should().Be("text:EARTHA KITT|");
+        SongKey.FromResult(Result("Đorđe Balašević", "Računajte Na Nas"))
+            .Should().Be("text:ĐORĐE BALAŠEVIĆ|RAČUNAJTE NA NAS");
     }
 
     [Fact]
-    public void FromResult_WithOnlyTitle_ReturnsFormattedKey()
+    public void FromResult_KeepsPunctuationInTextKeys()
     {
-        // Arrange
-        IsrcInfo isrcInfo = new(Selected: null, Spotify: null, Apple: null, Suffix: "");
-        RecognitionResult result = new(Artist: "", Title: "Je Cherche Un Homme", IsrcInfo: isrcInfo);
-
-        // Act
-        string? songKey = SongKey.FromResult(result);
-
-        // Assert
-        songKey.Should().Be("text:|JE CHERCHE UN HOMME");
+        SongKey.FromResult(Result("AC/DC", "T.N.T. (Live)"))
+            .Should().Be("text:AC/DC|T.N.T. (LIVE)");
     }
 
     [Fact]
-    public void FromResult_IsrcPrefersOverArtistAndTitle()
+    public void FromResult_WithNull_Throws()
     {
-        // Arrange
-        IsrcInfo isrcInfo = new(Selected: "GBUM70000001", Spotify: null, Apple: null, Suffix: "");
-        RecognitionResult result = new(Artist: "Some Artist", Title: "Some Title", IsrcInfo: isrcInfo);
-
-        // Act
-        string? songKey = SongKey.FromResult(result);
-
-        // Assert
-        songKey.Should().Be("isrc:GBUM70000001");
-        songKey.Should().NotContain("Some Artist");
-        songKey.Should().NotContain("Some Title");
-    }
-
-    [Fact]
-    public void FromResult_WithMixedCase_UppercasesEverything()
-    {
-        // Arrange
-        IsrcInfo isrcInfo = new(Selected: "UsaBc1234567", Spotify: null, Apple: null, Suffix: "");
-        RecognitionResult result = new(Artist: "artist", Title: "title", IsrcInfo: isrcInfo);
-
-        // Act
-        string? songKey = SongKey.FromResult(result);
-
-        // Assert
-        songKey.Should().Be("isrc:USABC1234567");
-    }
-
-    [Fact]
-    public void FromResult_WithSpecialCharacters_PreservesInFormattedKey()
-    {
-        // Arrange
-        IsrcInfo isrcInfo = new(Selected: null, Spotify: null, Apple: null, Suffix: "");
-        RecognitionResult result = new(Artist: "AC/DC", Title: "Back in Black", IsrcInfo: isrcInfo);
-
-        // Act
-        string? songKey = SongKey.FromResult(result);
-
-        // Assert
-        songKey.Should().Be("text:AC/DC|BACK IN BLACK");
-    }
-
-    [Fact]
-    public void FromResult_WithCyrillicCharacters_HandlesNonLatinScripts()
-    {
-        // Arrange
-        IsrcInfo isrcInfo = new(Selected: null, Spotify: null, Apple: null, Suffix: "");
-        RecognitionResult result = new(Artist: "Молчат Дома", Title: "Судно (Борис Рижий)", IsrcInfo: isrcInfo);
-
-        // Act
-        string? songKey = SongKey.FromResult(result);
-
-        // Assert
-        songKey.Should().Be("text:МОЛЧАТ ДОМА|СУДНО (БОРИС РИЖИЙ)");
-    }
-
-    [Fact]
-    public void FromResult_WithLatinDiacriticalMarks_HandlesSerbianCharacters()
-    {
-        // Arrange
-        IsrcInfo isrcInfo = new(Selected: null, Spotify: null, Apple: null, Suffix: "");
-        RecognitionResult result = new(Artist: "Zdravko Čolić", Title: "Ao nono bijela", IsrcInfo: isrcInfo);
-
-        // Act
-        string? songKey = SongKey.FromResult(result);
-
-        // Assert
-        songKey.Should().Be("text:ZDRAVKO ČOLIĆ|AO NONO BIJELA");
+        FluentActions.Invoking(() => SongKey.FromResult(null!)).Should().Throw<ArgumentNullException>();
     }
 }

@@ -1,77 +1,118 @@
 using System;
+
 using FluentAssertions;
+
 using Monad.Aggregation;
+
 using Xunit;
 
 namespace Monad.Tests.Aggregation;
 
 public sealed class WeightedLeaderElectionTests
 {
-    private static readonly DateTime Now = new(2025, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTimeOffset Now = new(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
 
     private static WeightedLeaderElection CreateDefault() =>
         new(maxSamples: 3, maxAge: TimeSpan.FromMinutes(5), weightsNewestToOldest: [1.0, 0.5, 0.25]);
 
-    private static RecognitionSample MakeSample(string? songKey, bool isNoMatch, DateTime? timestamp = null) =>
-        new(timestamp ?? Now, Dbfs: -20.0, SongKey: songKey, IsNoMatch: isNoMatch);
+    private static RecognitionSample Sample(string? key, DateTimeOffset? at = null) =>
+        new(at ?? Now, Dbfs: -20.0, SongKey: key, IsNoMatch: key is null);
 
     // --- Constructor ---
 
     [Fact]
-    public void Constructor_WithWeightsLengthMismatch_ThrowsArgumentException()
+    public void Constructor_WithWrongNumberOfWeights_Throws()
     {
-        // Arrange / Act
-        Action act = () => new WeightedLeaderElection(
-            maxSamples: 3, maxAge: TimeSpan.FromMinutes(5), weightsNewestToOldest: [1.0, 0.5]);
-
-        // Assert
-        act.Should().Throw<ArgumentException>();
+        FluentActions
+            .Invoking(() => new WeightedLeaderElection(3, TimeSpan.FromMinutes(5), [1.0, 0.5]))
+            .Should().Throw<ArgumentException>();
     }
 
     [Fact]
-    public void Constructor_WithMatchingWeightsLength_DoesNotThrow()
+    public void Constructor_WithNegativeWeight_Throws()
     {
-        // Arrange / Act
-        Action act = () => new WeightedLeaderElection(
-            maxSamples: 2, maxAge: TimeSpan.FromMinutes(5), weightsNewestToOldest: [1.0, 0.5]);
-
-        // Assert
-        act.Should().NotThrow();
+        FluentActions
+            .Invoking(() => new WeightedLeaderElection(2, TimeSpan.FromMinutes(5), [1.0, -0.5]))
+            .Should().Throw<ArgumentException>();
     }
 
-    // --- Add / Ring Buffer ---
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Constructor_WithNonPositiveSampleCount_Throws(int maxSamples)
+    {
+        FluentActions
+            .Invoking(() => new WeightedLeaderElection(maxSamples, TimeSpan.FromMinutes(5), []))
+            .Should().Throw<ArgumentOutOfRangeException>();
+    }
 
     [Fact]
-    public void Add_WithMoreThanMaxSamples_EvictsOldest()
+    public void Constructor_WithMatchingWeights_DoesNotThrow()
+    {
+        FluentActions
+            .Invoking(() => new WeightedLeaderElection(2, TimeSpan.FromMinutes(5), [1.0, 0.5]))
+            .Should().NotThrow();
+    }
+
+    [Fact]
+    public void Constructor_CopiesTheWeights()
+    {
+        // Arrange — the caller must not be able to change the weights afterwards
+        double[] weights = [1.0, 0.5];
+        WeightedLeaderElection election = new(2, TimeSpan.FromMinutes(5), weights);
+
+        // Act
+        weights[0] = 99.0;
+        election.Add(Sample("isrc:AAA"));
+        election.Add(Sample("isrc:BBB"));
+
+        // Assert — BBB is newest and takes weight 1.0, so its share is 1/1.5
+        election.ComputeLeader().LeaderShare.Should().BeApproximately(1.0 / 1.5, 0.001);
+    }
+
+    // --- Ring buffer ---
+
+    [Fact]
+    public void Add_BeyondCapacity_DropsTheOldest()
     {
         // Arrange
         WeightedLeaderElection election = CreateDefault();
-        election.Add(MakeSample("isrc:AAA", false));
-        election.Add(MakeSample("isrc:BBB", false));
-        election.Add(MakeSample("isrc:CCC", false));
-        election.Add(MakeSample("isrc:DDD", false)); // should evict AAA
+        election.Add(Sample("isrc:AAA"));
+        election.Add(Sample("isrc:BBB"));
+        election.Add(Sample("isrc:CCC"));
+        election.Add(Sample("isrc:DDD"));
 
-        // Act
-        ScatterStats stats = election.ComputeScatterStats();
-
-        // Assert
-        stats.TotalSamples.Should().Be(3);
+        // Act / Assert
+        election.Count.Should().Be(3);
+        election.ComputeScatterStats().TotalSamples.Should().Be(3);
     }
 
     [Fact]
-    public void Add_WithExpiredSamples_PrunesByAge()
+    public void Add_DropsSamplesOlderThanMaxAge()
     {
         // Arrange
         WeightedLeaderElection election = CreateDefault();
-        DateTime old = Now.AddMinutes(-10); // expired (maxAge = 5 min)
-        election.Add(MakeSample("isrc:OLD", false, old));
-        election.Add(MakeSample("isrc:NEW", false, Now)); // pruning happens on add
+        election.Add(Sample("isrc:OLD", Now.AddMinutes(-10)));
 
         // Act
-        ScatterStats stats = election.ComputeScatterStats();
+        election.Add(Sample("isrc:NEW", Now));
 
         // Assert
-        stats.TotalSamples.Should().Be(1);
+        election.ComputeScatterStats().TotalSamples.Should().Be(1);
+    }
+
+    [Fact]
+    public void Clear_EmptiesTheWindow()
+    {
+        // Arrange
+        WeightedLeaderElection election = CreateDefault();
+        election.Add(Sample("isrc:AAA"));
+
+        // Act
+        election.Clear();
+
+        // Assert
+        election.ComputeLeader().Should().Be(LeaderSnapshot.Empty);
     }
 
     // --- ComputeLeader ---
@@ -79,22 +120,15 @@ public sealed class WeightedLeaderElectionTests
     [Fact]
     public void ComputeLeader_WithNoSamples_ReturnsEmpty()
     {
-        // Arrange
-        WeightedLeaderElection election = CreateDefault();
-
-        // Act
-        LeaderSnapshot snapshot = election.ComputeLeader();
-
-        // Assert
-        snapshot.Should().Be(LeaderSnapshot.Empty);
+        CreateDefault().ComputeLeader().Should().Be(LeaderSnapshot.Empty);
     }
 
     [Fact]
-    public void ComputeLeader_WithSingleSample_ReturnsThatKeyWithFullShare()
+    public void ComputeLeader_WithOneSample_GivesItTheWholeShare()
     {
         // Arrange
         WeightedLeaderElection election = CreateDefault();
-        election.Add(MakeSample("isrc:AAA", false));
+        election.Add(Sample("isrc:AAA"));
 
         // Act
         LeaderSnapshot snapshot = election.ComputeLeader();
@@ -105,33 +139,27 @@ public sealed class WeightedLeaderElectionTests
     }
 
     [Fact]
-    public void ComputeLeader_WithUnanimousSamples_ReturnsFullShare()
+    public void ComputeLeader_WithUnanimousSamples_GivesFullShare()
     {
         // Arrange
         WeightedLeaderElection election = CreateDefault();
-        election.Add(MakeSample("isrc:AAA", false));
-        election.Add(MakeSample("isrc:AAA", false));
-        election.Add(MakeSample("isrc:AAA", false));
+        election.Add(Sample("isrc:AAA"));
+        election.Add(Sample("isrc:AAA"));
+        election.Add(Sample("isrc:AAA"));
 
-        // Act
-        LeaderSnapshot snapshot = election.ComputeLeader();
-
-        // Assert
-        snapshot.LeaderKey.Should().Be("isrc:AAA");
-        snapshot.LeaderShare.Should().BeApproximately(1.0, 0.001);
+        // Act / Assert
+        election.ComputeLeader().LeaderShare.Should().BeApproximately(1.0, 0.001);
     }
 
     [Fact]
-    public void ComputeLeader_WithCompetingKeys_RecencyWeightedWinnerWins()
+    public void ComputeLeader_LetsRecentResultsOutweighOlderOnes()
     {
-        // Arrange — weights [1.0, 0.5, 0.25] (newest-to-oldest)
-        // oldest: AAA (weight 0.25), middle: AAA (weight 0.5), newest: BBB (weight 1.0)
-        // AAA total = 0.25 + 0.5 = 0.75, BBB total = 1.0, totalWeight = 1.75
-        // BBB wins despite fewer samples because it's newest and gets the highest weight
+        // Arrange — weights newest-to-oldest are [1.0, 0.5, 0.25]:
+        // AAA collects 0.25 + 0.5 = 0.75, BBB collects 1.0 for being newest.
         WeightedLeaderElection election = CreateDefault();
-        election.Add(MakeSample("isrc:AAA", false));
-        election.Add(MakeSample("isrc:AAA", false));
-        election.Add(MakeSample("isrc:BBB", false));
+        election.Add(Sample("isrc:AAA"));
+        election.Add(Sample("isrc:AAA"));
+        election.Add(Sample("isrc:BBB"));
 
         // Act
         LeaderSnapshot snapshot = election.ComputeLeader();
@@ -142,12 +170,24 @@ public sealed class WeightedLeaderElectionTests
     }
 
     [Fact]
-    public void ComputeLeader_WithAllNullKeys_ReturnsNullLeader()
+    public void ComputeLeader_CountsUnrecognisedWindowsAgainstTheShare()
+    {
+        // Arrange — a track has to beat the silence too, not just rival guesses
+        WeightedLeaderElection election = new(2, TimeSpan.FromMinutes(5), [1.0, 1.0]);
+        election.Add(Sample(null));
+        election.Add(Sample("isrc:AAA"));
+
+        // Act / Assert
+        election.ComputeLeader().LeaderShare.Should().BeApproximately(0.5, 0.001);
+    }
+
+    [Fact]
+    public void ComputeLeader_WithNothingRecognised_ReturnsEmpty()
     {
         // Arrange
         WeightedLeaderElection election = CreateDefault();
-        election.Add(MakeSample(null, true));
-        election.Add(MakeSample(null, true));
+        election.Add(Sample(null));
+        election.Add(Sample(null));
 
         // Act
         LeaderSnapshot snapshot = election.ComputeLeader();
@@ -158,12 +198,12 @@ public sealed class WeightedLeaderElectionTests
     }
 
     [Fact]
-    public void ComputeLeader_WithCaseInsensitiveKeys_AggregatesTogether()
+    public void ComputeLeader_TreatsKeysCaseInsensitively()
     {
         // Arrange
         WeightedLeaderElection election = CreateDefault();
-        election.Add(MakeSample("isrc:AAA", false));
-        election.Add(MakeSample("isrc:aaa", false));
+        election.Add(Sample("isrc:AAA"));
+        election.Add(Sample("isrc:aaa"));
 
         // Act
         LeaderSnapshot snapshot = election.ComputeLeader();
@@ -174,30 +214,12 @@ public sealed class WeightedLeaderElectionTests
     }
 
     [Fact]
-    public void ComputeLeader_WithFewerSamplesThanMax_UsesHighestWeights()
+    public void ComputeLeader_WithAPartlyFilledWindow_UsesTheHeaviestWeights()
     {
-        // Arrange — 1 sample, weights [1.0, 0.5, 0.25] (newest-to-oldest)
-        // Single sample is newest, gets weight 1.0
-        // Single key gets 100% share regardless
+        // Arrange — two samples use weights [1.0, 0.5], so total weight is 1.5
         WeightedLeaderElection election = CreateDefault();
-        election.Add(MakeSample("isrc:AAA", false));
-
-        // Act
-        LeaderSnapshot snapshot = election.ComputeLeader();
-
-        // Assert — share should be 1.0 (only one key, gets all weight)
-        snapshot.LeaderShare.Should().BeApproximately(1.0, 0.001);
-    }
-
-    [Fact]
-    public void ComputeLeader_ShareCalculation_IsAccurate()
-    {
-        // Arrange — 2 samples, weights [1.0, 0.5] (newest-to-oldest, first 2 used)
-        // oldest: AAA (weight 0.5), newest: BBB (weight 1.0)
-        // totalWeight = 1.5, BBB share = 1.0/1.5 ≈ 0.6667
-        WeightedLeaderElection election = CreateDefault();
-        election.Add(MakeSample("isrc:AAA", false));
-        election.Add(MakeSample("isrc:BBB", false));
+        election.Add(Sample("isrc:AAA"));
+        election.Add(Sample("isrc:BBB"));
 
         // Act
         LeaderSnapshot snapshot = election.ComputeLeader();
@@ -207,28 +229,66 @@ public sealed class WeightedLeaderElectionTests
         snapshot.LeaderShare.Should().BeApproximately(1.0 / 1.5, 0.001);
     }
 
+    // --- LeaderSinceUtc ---
+
+    [Fact]
+    public void ComputeLeader_ReportsWhenTheLeadingTrackWasFirstHeard()
+    {
+        // Arrange
+        WeightedLeaderElection election = CreateDefault();
+        election.Add(Sample("isrc:AAA", Now));
+        election.Add(Sample("isrc:AAA", Now.AddSeconds(15)));
+        election.Add(Sample("isrc:AAA", Now.AddSeconds(30)));
+
+        // Act / Assert
+        election.ComputeLeader().LeaderSinceUtc.Should().Be(Now);
+    }
+
+    [Fact]
+    public void ComputeLeader_DoesNotLetAnEarlierTrackExtendTheCurrentRun()
+    {
+        // Arrange — BBB took over, so its run starts after AAA's last sighting
+        WeightedLeaderElection election = new(3, TimeSpan.FromMinutes(5), [1.0, 1.0, 0.1]);
+        election.Add(Sample("isrc:AAA", Now));
+        election.Add(Sample("isrc:BBB", Now.AddSeconds(15)));
+        election.Add(Sample("isrc:BBB", Now.AddSeconds(30)));
+
+        // Act
+        LeaderSnapshot snapshot = election.ComputeLeader();
+
+        // Assert
+        snapshot.LeaderKey.Should().Be("isrc:BBB");
+        snapshot.LeaderSinceUtc.Should().Be(Now.AddSeconds(15));
+    }
+
+    [Fact]
+    public void ComputeLeader_TreatsAnUnrecognisedWindowAsPartOfTheSameRun()
+    {
+        // Arrange — a failed lookup mid-song must not restart the segment
+        WeightedLeaderElection election = CreateDefault();
+        election.Add(Sample("isrc:AAA", Now));
+        election.Add(Sample(null, Now.AddSeconds(15)));
+        election.Add(Sample("isrc:AAA", Now.AddSeconds(30)));
+
+        // Act / Assert
+        election.ComputeLeader().LeaderSinceUtc.Should().Be(Now);
+    }
+
     // --- ComputeScatterStats ---
 
     [Fact]
     public void ComputeScatterStats_WithNoSamples_ReturnsEmpty()
     {
-        // Arrange
-        WeightedLeaderElection election = CreateDefault();
-
-        // Act
-        ScatterStats stats = election.ComputeScatterStats();
-
-        // Assert
-        stats.Should().Be(ScatterStats.Empty);
+        CreateDefault().ComputeScatterStats().Should().Be(ScatterStats.Empty);
     }
 
     [Fact]
-    public void ComputeScatterStats_WithAllNoMatch_CountsCorrectly()
+    public void ComputeScatterStats_CountsUnrecognisedWindows()
     {
         // Arrange
         WeightedLeaderElection election = CreateDefault();
-        election.Add(MakeSample(null, true));
-        election.Add(MakeSample(null, true));
+        election.Add(Sample(null));
+        election.Add(Sample(null));
 
         // Act
         ScatterStats stats = election.ComputeScatterStats();
@@ -237,16 +297,17 @@ public sealed class WeightedLeaderElectionTests
         stats.TotalSamples.Should().Be(2);
         stats.NoMatchSamples.Should().Be(2);
         stats.DistinctSongKeys.Should().Be(0);
+        stats.NoMatchShare.Should().Be(1.0);
     }
 
     [Fact]
-    public void ComputeScatterStats_WithMixedSamples_CountsDistinctKeysCaseInsensitive()
+    public void ComputeScatterStats_CountsDistinctKeysCaseInsensitively()
     {
         // Arrange
         WeightedLeaderElection election = CreateDefault();
-        election.Add(MakeSample("isrc:AAA", false));
-        election.Add(MakeSample("isrc:aaa", false)); // same key, different case
-        election.Add(MakeSample("isrc:BBB", false));
+        election.Add(Sample("isrc:AAA"));
+        election.Add(Sample("isrc:aaa"));
+        election.Add(Sample("isrc:BBB"));
 
         // Act
         ScatterStats stats = election.ComputeScatterStats();
@@ -258,16 +319,8 @@ public sealed class WeightedLeaderElectionTests
     }
 
     [Fact]
-    public void ComputeScatterStats_WithNullSongKey_CountedAsNoMatch()
+    public void NoMatchShare_WithNoSamples_IsTreatedAsFullyUnrecognised()
     {
-        // Arrange
-        WeightedLeaderElection election = CreateDefault();
-        election.Add(MakeSample(null, false)); // null key, not explicitly IsNoMatch
-
-        // Act
-        ScatterStats stats = election.ComputeScatterStats();
-
-        // Assert
-        stats.NoMatchSamples.Should().Be(1);
+        ScatterStats.Empty.NoMatchShare.Should().Be(1.0);
     }
 }

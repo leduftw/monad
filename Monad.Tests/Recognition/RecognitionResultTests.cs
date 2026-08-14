@@ -1,368 +1,142 @@
-using FluentAssertions;
-using Monad.Recognition;
 using System.Text.Json;
+
+using FluentAssertions;
+
+using Monad.Recognition;
+
 using Xunit;
 
 namespace Monad.Tests.Recognition;
 
 public sealed class RecognitionResultTests
 {
-    [Fact]
-    public void FromAuddResult_WithValidArtistAndTitle_ReturnsCorrectValues()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": ""The Beatles"",
-            ""title"": ""Hey Jude"",
-            ""isrc"": ""GBUM70000001""
-        }").RootElement;
+    private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
 
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
+    // --- FromAuddResult ---
+
+    [Fact]
+    public void FromAuddResult_ReadsArtistTitleAndIsrc()
+    {
+        // Arrange / Act
+        RecognitionResult result = RecognitionResult.FromAuddResult(Parse(
+            """{"artist":"Serge Gainsbourg","title":"Couleur Café","isrc":"FRZ036400450"}"""));
 
         // Assert
-        recognitionResult.Artist.Should().Be("The Beatles");
-        recognitionResult.Title.Should().Be("Hey Jude");
-        recognitionResult.IsrcInfo.Selected.Should().Be("GBUM70000001");
+        result.Artist.Should().Be("Serge Gainsbourg");
+        result.Title.Should().Be("Couleur Café");
+        result.IsrcInfo.Selected.Should().Be("FRZ036400450");
     }
 
     [Fact]
-    public void FromAuddResult_WithArtistWhitespace_TrimsWhitespace()
+    public void FromAuddResult_TrimsSurroundingWhitespace()
     {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": ""  Queen  "",
-            ""title"": ""Bohemian Rhapsody"",
-            ""isrc"": null
-        }").RootElement;
-
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
+        // Arrange / Act
+        RecognitionResult result = RecognitionResult.FromAuddResult(Parse(
+            """{"artist":"  Eartha Kitt  ","title":"  Je Cherche Un Homme  "}"""));
 
         // Assert
-        recognitionResult.Artist.Should().Be("Queen");
-        recognitionResult.Title.Should().Be("Bohemian Rhapsody");
+        result.Artist.Should().Be("Eartha Kitt");
+        result.Title.Should().Be("Je Cherche Un Homme");
+    }
+
+    [Theory]
+    [InlineData("""{"artist":12345}""")]
+    [InlineData("""{"artist":null}""")]
+    [InlineData("""{"artist":{"name":"x"}}""")]
+    [InlineData("""{"artist":["x"]}""")]
+    [InlineData("{}")]
+    public void FromAuddResult_WithAMissingOrMistypedArtist_UsesAnEmptyString(string json)
+    {
+        RecognitionResult.FromAuddResult(Parse(json)).Artist.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("42")]
+    [InlineData("null")]
+    public void FromAuddResult_WithSomethingOtherThanAnObject_ProducesEmptyFields(string json)
+    {
+        // Arrange / Act
+        RecognitionResult result = RecognitionResult.FromAuddResult(Parse(json));
+
+        // Assert
+        result.Artist.Should().BeEmpty();
+        result.Title.Should().BeEmpty();
+        result.IsrcInfo.Selected.Should().BeNull();
     }
 
     [Fact]
-    public void FromAuddResult_WithTitleWhitespace_TrimsWhitespace()
+    public void FromAuddResult_PreservesNonLatinScripts()
     {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": ""Pink Floyd"",
-            ""title"": ""  Comfortably Numb  "",
-            ""isrc"": null
-        }").RootElement;
-
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
+        // Arrange / Act
+        RecognitionResult result = RecognitionResult.FromAuddResult(Parse(
+            """{"artist":"Бијело Дугме","title":"Ђурђевдан"}"""));
 
         // Assert
-        recognitionResult.Artist.Should().Be("Pink Floyd");
-        recognitionResult.Title.Should().Be("Comfortably Numb");
+        result.Artist.Should().Be("Бијело Дугме");
+        result.Title.Should().Be("Ђурђевдан");
     }
 
     [Fact]
-    public void FromAuddResult_WithBothWhitespace_TrimsBoth()
+    public void FromAuddResult_PreservesDiacritics()
     {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": ""  David Bowie  "",
-            ""title"": ""  Space Oddity  "",
-            ""isrc"": null
-        }").RootElement;
-
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
+        // Arrange / Act
+        RecognitionResult result = RecognitionResult.FromAuddResult(Parse(
+            """{"artist":"Đorđe Balašević","title":"Računajte Na Nas"}"""));
 
         // Assert
-        recognitionResult.Artist.Should().Be("David Bowie");
-        recognitionResult.Title.Should().Be("Space Oddity");
+        result.Artist.Should().Be("Đorđe Balašević");
+        result.Title.Should().Be("Računajte Na Nas");
+    }
+
+    // --- DisplayText ---
+
+    [Fact]
+    public void DisplayText_WithArtistAndTitle_JoinsThemAndAppendsTheIsrc()
+    {
+        // Arrange
+        RecognitionResult result = new("Isabelle Antena", "Le Poisson Des Mers Du Sud", IsrcInfo.None with
+        {
+            Selected = "GB5EM1001054",
+            Suffix = "[ISRC: GB5EM1001054]",
+        });
+
+        // Act / Assert
+        result.DisplayText.Should().Be("Isabelle Antena - Le Poisson Des Mers Du Sud [ISRC: GB5EM1001054]");
     }
 
     [Fact]
-    public void FromAuddResult_WithMissingArtist_ReturnsEmptyString()
+    public void DisplayText_WithOnlyATitle_OmitsTheSeparator()
     {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""title"": ""Imagine"",
-            ""isrc"": null
-        }").RootElement;
+        // Arrange — the old formatting trimmed stray dashes off the ends, which
+        // quietly mangled titles that legitimately started or ended with one.
+        RecognitionResult result = new(string.Empty, "Untitled", IsrcInfo.None);
 
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
-
-        // Assert
-        recognitionResult.Artist.Should().Be("");
-        recognitionResult.Title.Should().Be("Imagine");
+        // Act / Assert
+        result.DisplayText.Should().Be("Untitled [ISRC: n/a]");
     }
 
     [Fact]
-    public void FromAuddResult_WithMissingTitle_ReturnsEmptyString()
+    public void DisplayText_WithOnlyAnArtist_OmitsTheSeparator()
     {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": ""John Lennon"",
-            ""isrc"": null
-        }").RootElement;
-
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
-
-        // Assert
-        recognitionResult.Artist.Should().Be("John Lennon");
-        recognitionResult.Title.Should().Be("");
+        new RecognitionResult("Nina Simone", string.Empty, IsrcInfo.None)
+            .DisplayText.Should().Be("Nina Simone [ISRC: n/a]");
     }
 
     [Fact]
-    public void FromAuddResult_WithNullArtist_ReturnsEmptyString()
+    public void DisplayText_WithNeither_SaysSo()
     {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": null,
-            ""title"": ""Stairway to Heaven"",
-            ""isrc"": null
-        }").RootElement;
-
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
-
-        // Assert
-        recognitionResult.Artist.Should().Be("");
-        recognitionResult.Title.Should().Be("Stairway to Heaven");
+        new RecognitionResult(string.Empty, string.Empty, IsrcInfo.None)
+            .DisplayText.Should().Be("Unidentified track [ISRC: n/a]");
     }
 
     [Fact]
-    public void FromAuddResult_WithNullTitle_ReturnsEmptyString()
+    public void DisplayText_KeepsLeadingAndTrailingDashesInTitles()
     {
         // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": ""Led Zeppelin"",
-            ""title"": null,
-            ""isrc"": null
-        }").RootElement;
+        RecognitionResult result = new("Artist", "- Interlude -", IsrcInfo.None);
 
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
-
-        // Assert
-        recognitionResult.Artist.Should().Be("Led Zeppelin");
-        recognitionResult.Title.Should().Be("");
-    }
-
-    [Fact]
-    public void FromAuddResult_WithWhitespaceOnlyArtist_ReturnsEmptyString()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": ""   "",
-            ""title"": ""Song Title"",
-            ""isrc"": null
-        }").RootElement;
-
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
-
-        // Assert
-        recognitionResult.Artist.Should().Be("");
-        recognitionResult.Title.Should().Be("Song Title");
-    }
-
-    [Fact]
-    public void FromAuddResult_WithWhitespaceOnlyTitle_ReturnsEmptyString()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": ""Artist Name"",
-            ""title"": ""   "",
-            ""isrc"": null
-        }").RootElement;
-
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
-
-        // Assert
-        recognitionResult.Artist.Should().Be("Artist Name");
-        recognitionResult.Title.Should().Be("");
-    }
-
-    [Fact]
-    public void FromAuddResult_WithBothMissing_ReturnsBothEmpty()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""isrc"": null
-        }").RootElement;
-
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
-
-        // Assert
-        recognitionResult.Artist.Should().Be("");
-        recognitionResult.Title.Should().Be("");
-    }
-
-    [Fact]
-    public void FromAuddResult_WithBothNullAndMissing_ReturnsBothEmpty()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": null,
-            ""title"": null,
-            ""isrc"": null
-        }").RootElement;
-
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
-
-        // Assert
-        recognitionResult.Artist.Should().Be("");
-        recognitionResult.Title.Should().Be("");
-    }
-
-    [Fact]
-    public void FromAuddResult_WithArtistAsNumber_ReturnsEmptyString()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": 123,
-            ""title"": ""Song"",
-            ""isrc"": null
-        }").RootElement;
-
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
-
-        // Assert
-        recognitionResult.Artist.Should().Be("");
-        recognitionResult.Title.Should().Be("Song");
-    }
-
-    [Fact]
-    public void FromAuddResult_WithTitleAsObject_ReturnsEmptyString()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": ""Artist"",
-            ""title"": { ""nested"": ""value"" },
-            ""isrc"": null
-        }").RootElement;
-
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
-
-        // Assert
-        recognitionResult.Artist.Should().Be("Artist");
-        recognitionResult.Title.Should().Be("");
-    }
-
-    [Fact]
-    public void FromAuddResult_WithCompleteData_ExtractsIsrc()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": ""Radiohead"",
-            ""title"": ""Creep"",
-            ""isrc"": ""GBUM70000003"",
-            ""spotify"": { ""external_ids"": { ""isrc"": ""GBUM70000003"" } },
-            ""apple_music"": { ""isrc"": ""GBUM70000003"" }
-        }").RootElement;
-
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
-
-        // Assert
-        recognitionResult.Artist.Should().Be("Radiohead");
-        recognitionResult.Title.Should().Be("Creep");
-        recognitionResult.IsrcInfo.Selected.Should().Be("GBUM70000003");
-        recognitionResult.IsrcInfo.Spotify.Should().Be("GBUM70000003");
-        recognitionResult.IsrcInfo.Apple.Should().Be("GBUM70000003");
-    }
-
-    [Fact]
-    public void FromAuddResult_WithTabsAndNewlines_TrimsWhitespace()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": ""\t\n  The Who  \n\t"",
-            ""title"": ""\t  My Generation  \t"",
-            ""isrc"": null
-        }").RootElement;
-
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
-
-        // Assert
-        recognitionResult.Artist.Should().Be("The Who");
-        recognitionResult.Title.Should().Be("My Generation");
-    }
-
-    [Fact]
-    public void FromAuddResult_WithEmptyJson_ReturnsAllEmpty()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{}").RootElement;
-
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
-
-        // Assert
-        recognitionResult.Artist.Should().Be("");
-        recognitionResult.Title.Should().Be("");
-        recognitionResult.IsrcInfo.Selected.Should().BeNull();
-    }
-
-    [Fact]
-    public void FromAuddResult_WithSpecialCharacters_PreservesCharacters()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": ""AC/DC"",
-            ""title"": ""Back in Black & Blue"",
-            ""isrc"": null
-        }").RootElement;
-
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
-
-        // Assert
-        recognitionResult.Artist.Should().Be("AC/DC");
-        recognitionResult.Title.Should().Be("Back in Black & Blue");
-    }
-
-    [Fact]
-    public void FromAuddResult_WithUnicodeCharacters_PreservesUnicode()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": ""�dith Piaf"",
-            ""title"": ""La Vie en Rose"",
-            ""isrc"": null
-        }").RootElement;
-
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
-
-        // Assert
-        recognitionResult.Artist.Should().Be("�dith Piaf");
-        recognitionResult.Title.Should().Be("La Vie en Rose");
-    }
-
-    [Fact]
-    public void FromAuddResult_WithCyrillicCharacters_PreservesCyrillic()
-    {
-        // Arrange
-        JsonElement result = JsonDocument.Parse(@"{
-            ""artist"": ""?????? ????"",
-            ""title"": ""????? (????? ?????)"",
-            ""isrc"": null
-        }").RootElement;
-
-        // Act
-        RecognitionResult recognitionResult = RecognitionResult.FromAuddResult(result);
-
-        // Assert
-        recognitionResult.Artist.Should().Be("?????? ????");
-        recognitionResult.Title.Should().Be("????? (????? ?????)");
+        // Act / Assert
+        result.DisplayText.Should().Be("Artist - - Interlude - [ISRC: n/a]");
     }
 }

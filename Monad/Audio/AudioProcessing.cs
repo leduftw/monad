@@ -1,95 +1,125 @@
-﻿using System;
+using System;
 
 namespace Monad.Audio;
 
 public static class AudioProcessing
 {
-    public static short[] DownmixToMono(short[] interleaved, int channels)
+    /// <summary>
+    /// Level reported for digitally silent audio. Well below the noise floor of
+    /// any real recording, so it compares correctly against every threshold,
+    /// while staying a finite number that survives JSON serialization.
+    /// </summary>
+    public const double SilenceFloorDbfs = -120.0;
+
+    /// <summary>
+    /// Averages interleaved channels into <paramref name="mono"/> and returns
+    /// the number of frames written. Trailing samples of an incomplete final
+    /// frame are ignored.
+    /// </summary>
+    public static int DownmixToMono(ReadOnlySpan<float> interleaved, int channels, Span<float> mono)
     {
-        if (channels <= 1)
-        {
-            return interleaved;
-        }
+        ArgumentOutOfRangeException.ThrowIfLessThan(channels, 1);
 
         int frames = interleaved.Length / channels;
-        short[] mono = new short[frames];
 
-        for (int i = 0; i < frames; i++)
+        if (frames > mono.Length)
         {
-            int sum = 0;
-            int baseIdx = i * channels;
-
-            for (int c = 0; c < channels; c++)
-            {
-                sum += interleaved[baseIdx + c];
-            }
-
-            int avg = sum / channels;
-            mono[i] = (short)Math.Clamp(avg, short.MinValue, short.MaxValue);
+            throw new ArgumentException(
+                $"Destination holds {mono.Length} samples but {frames} frames were supplied.", nameof(mono));
         }
 
-        return mono;
+        if (channels == 1)
+        {
+            interleaved[..frames].CopyTo(mono);
+            return frames;
+        }
+
+        float scale = 1f / channels;
+
+        for (int frame = 0; frame < frames; frame++)
+        {
+            ReadOnlySpan<float> slice = interleaved.Slice(frame * channels, channels);
+
+            float sum = 0f;
+            for (int channel = 0; channel < channels; channel++)
+            {
+                sum += slice[channel];
+            }
+
+            mono[frame] = sum * scale;
+        }
+
+        return frames;
     }
 
-    public static short[] NormalizeOnlyBoost(short[] mono, float peakTarget)
+    /// <summary>Root-mean-square level in dBFS, where 0 dBFS is full scale.</summary>
+    public static double RmsDbfs(ReadOnlySpan<float> samples)
     {
-        if (mono.Length == 0)
+        if (samples.Length == 0)
         {
-            return mono;
+            return SilenceFloorDbfs;
         }
 
-        int peak = 0;
-        foreach (short s in mono)
+        double sumOfSquares = 0.0;
+
+        for (int i = 0; i < samples.Length; i++)
         {
-            int abs = Math.Abs((int)s);
-            if (abs > peak)
+            double sample = samples[i];
+            sumOfSquares += sample * sample;
+        }
+
+        double rms = Math.Sqrt(sumOfSquares / samples.Length);
+
+        return rms <= 1e-12 ? SilenceFloorDbfs : Math.Max(SilenceFloorDbfs, 20.0 * Math.Log10(rms));
+    }
+
+    public static float Peak(ReadOnlySpan<float> samples)
+    {
+        float peak = 0f;
+
+        for (int i = 0; i < samples.Length; i++)
+        {
+            float magnitude = Math.Abs(samples[i]);
+            if (magnitude > peak)
             {
-                peak = abs;
+                peak = magnitude;
             }
         }
 
-        if (peak <= 0)
+        return peak;
+    }
+
+    /// <summary>
+    /// Scales <paramref name="samples"/> in place so its loudest sample sits at
+    /// <paramref name="peakTarget"/>. Quiet audio is boosted; audio that is
+    /// already louder is left alone, so this can never introduce clipping.
+    /// </summary>
+    /// <remarks>
+    /// This exists to give the recognition API a healthy signal level. Measure
+    /// loudness <em>before</em> calling it -- normalizing first would push every
+    /// window towards the target and make silence look loud.
+    /// </remarks>
+    public static void BoostToPeak(Span<float> samples, float peakTarget)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(peakTarget);
+
+        float peak = Peak(samples);
+
+        if (peak <= 0f)
         {
-            return mono;
+            return;
         }
 
-        float targetPeak = peakTarget * 32767f;
-        float scale = targetPeak / peak;
+        float scale = peakTarget / peak;
 
         if (scale <= 1.0f)
         {
-            return mono;
+            return;
         }
 
-        short[] y = new short[mono.Length];
-
-        for (int i = 0; i < mono.Length; i++)
+        for (int i = 0; i < samples.Length; i++)
         {
-            float v = mono[i] * scale;
-            v = Math.Clamp(v, -32768f, 32767f);
-            y[i] = (short)Math.Round(v);
+            samples[i] = Math.Clamp(samples[i] * scale, -1f, 1f);
         }
-
-        return y;
-    }
-
-    public static double RmsDbfs(short[] mono)
-    {
-        if (mono.Length == 0)
-        {
-            return -999.0;
-        }
-
-        double sumSq = 0;
-
-        for (int i = 0; i < mono.Length; i++)
-        {
-            double x = mono[i] / 32768.0;
-            sumSq += x * x;
-        }
-
-        double rms = Math.Sqrt(sumSq / mono.Length);
-
-        return rms <= 1e-12 ? -999.0 : 20.0 * Math.Log10(rms);
     }
 }
