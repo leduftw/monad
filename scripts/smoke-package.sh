@@ -84,7 +84,7 @@ case "$rid" in
     ;;
   win-arm64 | win-x64)
     executable="$payload/monad.exe"
-    expected_files=$'DOTNET-LICENSE.txt\nDOTNET-THIRD-PARTY-NOTICES.txt\nLICENSE\nREADME.md\nTHIRD-PARTY-NOTICES.md\nmonad.exe\nmonad.example.json'
+    expected_files=$'DOTNET-LICENSE.txt\nDOTNET-THIRD-PARTY-NOTICES.txt\nLICENSE\nREADME.md\nTHIRD-PARTY-NOTICES.md\nmonad.example.json\nmonad.exe'
     ;;
   *)
     echo "unsupported runtime identifier: $rid" >&2
