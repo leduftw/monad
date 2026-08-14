@@ -51,24 +51,69 @@ public sealed class MonadApp(
         log.Status($"Listening via {source.Description}.");
         log.Status($"Analysing the last {config.WindowSeconds}s every {config.IntervalSeconds}s. Ctrl+C to stop.");
 
-        using CancellationTokenSource captureStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        Task capture = Task.Run(() => this.PumpAsync(captureStop.Token), CancellationToken.None);
+        using CancellationTokenSource runStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task capture = Task.Run(() => this.PumpAsync(runStop.Token), CancellationToken.None);
+        Task<RunSummary> analysis = this.AnalyzeAsync(runStop.Token);
+        bool captureObserved = false;
 
         try
         {
-            return await this.AnalyzeAsync(cancellationToken).ConfigureAwait(false);
+            Task completed = await Task.WhenAny(analysis, capture).ConfigureAwait(false);
+
+            if (completed == capture && capture.IsFaulted)
+            {
+                // A capture source is a stream for the lifetime of the run. The
+                // external-process implementation handles helper restarts inside
+                // that stream, so reaching here before cancellation is terminal.
+                captureObserved = true;
+
+                MonadFatalException failure;
+
+                try
+                {
+                    await capture.ConfigureAwait(false);
+                    failure = new MonadFatalException($"Capture source stopped unexpectedly ({source.Description}).");
+                }
+                catch (MonadFatalException ex)
+                {
+                    failure = ex;
+                }
+
+                // Stop the timer promptly and let it flush the active segment
+                // before surfacing the capture failure to the caller.
+                await runStop.CancelAsync().ConfigureAwait(false);
+
+                try
+                {
+                    await analysis.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (runStop.IsCancellationRequested)
+                {
+                    // The analysis may have been inside a cancellation-aware
+                    // sink when capture failed. Capture is still the terminal
+                    // error; do not let teardown cancellation turn it into a
+                    // successful exit at the top level.
+                }
+
+                throw failure;
+            }
+
+            return await analysis.ConfigureAwait(false);
         }
         finally
         {
-            await captureStop.CancelAsync().ConfigureAwait(false);
+            await runStop.CancelAsync().ConfigureAwait(false);
 
-            try
+            if (!captureObserved)
             {
-                await capture.ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                // Expected: we just asked it to stop.
+                try
+                {
+                    await capture.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (runStop.IsCancellationRequested)
+                {
+                    // Expected: we just asked it to stop.
+                }
             }
         }
     }
@@ -98,13 +143,25 @@ public sealed class MonadApp(
                 current.AppendInterleaved(block.Samples.Span, block.Format.Channels, timeProvider.GetUtcNow());
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // Normal shutdown.
         }
+        catch (Exception ex) when (cancellationToken.IsCancellationRequested)
+        {
+            // Some platform APIs report a transport or device error while they
+            // are being torn down instead of cancellation. Caller cancellation
+            // still wins: shutdown should remain graceful.
+            log.Diagnostic($"capture stopped during shutdown: {ex.Message}");
+        }
         catch (Exception ex)
         {
-            log.Status($"Capture stopped: {ex.Message}");
+            throw new MonadFatalException($"Capture stopped: {ex.Message}");
+        }
+
+        if (!cancellationToken.IsCancellationRequested)
+        {
+            throw new MonadFatalException($"Capture source stopped unexpectedly ({source.Description}).");
         }
     }
 

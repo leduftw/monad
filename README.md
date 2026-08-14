@@ -1,5 +1,8 @@
 # Monad
 
+[![CI](https://github.com/leduftw/monad/actions/workflows/ci.yml/badge.svg)](https://github.com/leduftw/monad/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/leduftw/monad)](https://github.com/leduftw/monad/releases/latest)
+
 Real-time music recognition monitor. Listens to whatever your machine is
 playing, identifies the tracks, and writes out a timeline of what played when.
 
@@ -13,6 +16,70 @@ SEGMENT  [2026-01-15 01:30:42 - 01:31:52]    1m10s  UNKNOWN
 SEGMENT  [2026-01-15 01:31:52 - 01:34:29]    2m37s  Serge Gainsbourg - Couleur Café [ISRC: FRZ036400450]
 SEGMENT  [2026-01-15 01:34:29 - 01:36:03]    1m34s  SILENCE
 ```
+
+## Install
+
+Release binaries contain the .NET runtime, and the macOS archive also contains
+the native capture helper. Installing from a release needs neither .NET nor
+Xcode.
+
+### Homebrew (macOS and Linux)
+
+```sh
+brew install leduftw/tap/monad
+```
+
+On Linux the formula also installs PulseAudio's `parec` capture client. It works
+with PulseAudio and with PipeWire's PulseAudio compatibility layer.
+
+### WinGet (Windows)
+
+```powershell
+winget install leduftw.monad
+```
+
+WinGet publication goes through Microsoft's moderated repository. If the first
+submission is still being reviewed, use the PowerShell installer below. Once
+the package and its release credential are in place, later releases update it
+automatically.
+
+### Direct installer
+
+macOS or Linux:
+
+```sh
+curl -fsSL https://github.com/leduftw/monad/releases/latest/download/monad-installer.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://github.com/leduftw/monad/releases/latest/download/monad-installer.ps1 | iex
+```
+
+Both installers detect the machine architecture, download the latest GitHub
+Release and verify it against that release's `SHA256SUMS`. Set `MONAD_VERSION`
+to install a specific version or `MONAD_INSTALL_DIR` to choose the destination.
+The Unix installer never invokes `sudo`; if its destination is not already on
+`PATH`, it prints the exact line to add.
+
+Versioned copies of both installer scripts are attached to every GitHub
+Release for inspection and reproducible use.
+
+### Start monitoring
+
+Get an API token from [AudD](https://audd.io), then:
+
+```sh
+export AUDD_API_TOKEN="your-token-here"   # PowerShell: $env:AUDD_API_TOKEN = "your-token-here"
+monad
+```
+
+Press Ctrl+C to stop. The segment in progress is reported before Monad exits.
+
+To update, use `brew upgrade monad`, `winget upgrade leduftw.monad`, or rerun
+the direct installer. All six platform archives are also available from the
+[latest GitHub Release](https://github.com/leduftw/monad/releases/latest).
 
 ## How it works
 
@@ -55,9 +122,9 @@ answer, and a state machine turns that into segments.
 
 | Platform | Capture path | Needs |
 | --- | --- | --- |
-| macOS 14.2+ | Core Audio process tap | Xcode command line tools to build; audio recording permission to run |
+| macOS 14.2+ | Core Audio process tap | audio recording permission |
 | Windows | WASAPI loopback | nothing extra |
-| Linux | `parec`, falling back to `ffmpeg` | `pulseaudio-utils` or `ffmpeg` |
+| Linux (glibc) | `parec`, falling back to `ffmpeg` | `pulseaudio-utils` or `ffmpeg` |
 
 On macOS the tap is created against a private aggregate device, so no BlackHole
 or Loopback install is needed, and switching output device mid-session (speakers
@@ -71,19 +138,19 @@ to AirPods, say) is handled without restarting.
 > **Linux is untested.** The code path is there and is straightforward, but it
 > has not been run on a Linux machine.
 
-## Getting started
+The prebuilt Linux archives target glibc. The direct installer detects
+musl-based distributions such as Alpine and exits with a clear error instead
+of installing an incompatible binary; building from source remains available.
+
+## Build from source
 
 ```bash
 git clone https://github.com/leduftw/monad.git
 cd monad
 
 dotnet build
-
-export AUDD_API_TOKEN="your-token-here"
 dotnet run --project Monad
 ```
-
-Press Ctrl+C to stop. The segment in progress is reported before it exits.
 
 On macOS `dotnet build` also compiles the capture helper (`monad-audiotap`) with
 `swiftc` and drops it next to the application. If the Xcode command line tools
@@ -160,6 +227,7 @@ monad replay recording.wav --no-recognize --window 4 --interval 4 --min-segment 
 ### Config file
 
 ```bash
+# From a source checkout or an extracted release archive:
 cp monad.example.json monad.json      # then edit it
 ```
 
@@ -225,7 +293,7 @@ disagreement is reported rather than hidden.
 
 ```bash
 dotnet build                          # builds the Swift helper too, on macOS
-dotnet test                           # 295 tests
+dotnet test
 dotnet test --filter "FullyQualifiedName~SegmentTrackerTests"
 ```
 
@@ -237,6 +305,9 @@ The macOS helper can be exercised on its own:
 ```
 
 Set `MONAD_AUDIOTAP_PATH` to point at a helper built somewhere else.
+
+Release packaging and downstream Homebrew/WinGet publication are documented in
+[`RELEASING.md`](RELEASING.md).
 
 ## Licence
 

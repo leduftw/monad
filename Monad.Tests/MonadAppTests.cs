@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -7,6 +8,7 @@ using FluentAssertions;
 using Monad;
 using Monad.Aggregation;
 using Monad.Audio;
+using Monad.Output;
 using Monad.Recognition;
 
 using Xunit;
@@ -111,6 +113,82 @@ public sealed class MonadAppTests
     }
 
     [Fact]
+    public async Task RunAsync_WhenCaptureSourceEndsUnexpectedly_ThrowsFatalError()
+    {
+        // Arrange
+        MonadApp app = new(new EndingSource(), new FakeRecognizer(), new RecordingSegmentSink(), Config,
+            TimeProvider.System, MonadLog.Silent);
+
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(2));
+
+        // Act / Assert
+        await FluentActions
+            .Awaiting(() => app.RunAsync(timeout.Token))
+            .Should().ThrowAsync<MonadFatalException>()
+            .WithMessage("*stopped unexpectedly*");
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenCaptureSourceThrows_ThrowsFatalErrorWithCause()
+    {
+        // Arrange
+        MonadApp app = new(new FailingSource(), new FakeRecognizer(), new RecordingSegmentSink(), Config,
+            TimeProvider.System, MonadLog.Silent);
+
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(2));
+
+        // Act / Assert
+        await FluentActions
+            .Awaiting(() => app.RunAsync(timeout.Token))
+            .Should().ThrowAsync<MonadFatalException>()
+            .WithMessage("*device vanished*");
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenCaptureFailsWhileSinkObservesCancellation_PreservesCaptureFailure()
+    {
+        // Arrange — the first recognition starts a song and the second ends it,
+        // putting analysis inside the sink. Capture then fails, and the sink
+        // observes the linked run cancellation while that failure is drained.
+        CancellationAwareSink sink = new();
+        FailAfterSignalSource source = new(sink.Entered);
+        FakeRecognizer recognizer = new(
+            FakeRecognizer.Match("Nina Simone", "Feeling Good", "USSM17300123"),
+            RecognitionOutcome.NoMatch);
+
+        MonadApp app = new(source, recognizer, sink, Config with { UnknownPersistLoops = 1 },
+            TimeProvider.System, MonadLog.Silent);
+
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+
+        // Act / Assert
+        await FluentActions
+            .Awaiting(() => app.RunAsync(timeout.Token))
+            .Should().ThrowAsync<MonadFatalException>()
+            .WithMessage("*device vanished*");
+
+        sink.CancellationObserved.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenCaptureThrowsDuringCallerCancellation_StopsGracefully()
+    {
+        // Arrange — platform capture APIs sometimes report a transport error as
+        // their cancellation path is tearing them down. It must not turn an
+        // ordinary Ctrl+C into a fatal exit.
+        MonadApp app = new(new ShutdownFailingSource(), new FakeRecognizer(), new RecordingSegmentSink(), Config,
+            TimeProvider.System, MonadLog.Silent);
+
+        using CancellationTokenSource stop = new(TimeSpan.FromMilliseconds(100));
+
+        // Act
+        RunSummary summary = await app.RunAsync(stop.Token);
+
+        // Assert
+        summary.WindowsAnalyzed.Should().Be(0);
+    }
+
+    [Fact]
     public async Task RunAsync_AdoptsTheSampleRateTheSourceActuallyReports()
     {
         // Arrange — the configured rate is only a guess until audio arrives
@@ -163,6 +241,114 @@ public sealed class MonadAppTests
             catch (OperationCanceledException)
             {
                 yield break;
+            }
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    /// <summary>A source that reaches EOF even though the run did not ask it to stop.</summary>
+    private sealed class EndingSource : ISystemAudioSource
+    {
+        public string Description => "ending source";
+
+        public async System.Collections.Generic.IAsyncEnumerable<AudioBlock> ReadAsync(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.Yield();
+            yield break;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    /// <summary>A source whose capture backend fails while the run is active.</summary>
+    private sealed class FailingSource : ISystemAudioSource
+    {
+        public string Description => "failing source";
+
+        public async System.Collections.Generic.IAsyncEnumerable<AudioBlock> ReadAsync(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.Yield();
+
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                throw new InvalidOperationException("device vanished");
+            }
+
+            yield break;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    /// <summary>A source that reports a backend error only as cancellation tears it down.</summary>
+    private sealed class ShutdownFailingSource : ISystemAudioSource
+    {
+        public string Description => "shutdown-failing source";
+
+        public async System.Collections.Generic.IAsyncEnumerable<AudioBlock> ReadAsync(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw new InvalidOperationException("capture backend failed during shutdown");
+            }
+
+            yield break;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    /// <summary>Keeps capture alive until analysis enters the sink, then fails.</summary>
+    private sealed class FailAfterSignalSource(Task signal) : ISystemAudioSource
+    {
+        private static readonly float[] Samples = [.. Enumerable.Repeat(0.2f, Rate / 100)];
+
+        public string Description => "coordinated failing source";
+
+        public async System.Collections.Generic.IAsyncEnumerable<AudioBlock> ReadAsync(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            while (!signal.IsCompleted)
+            {
+                yield return new AudioBlock(Samples, new AudioFormat(Rate, 1));
+                await Task.Delay(TimeSpan.FromMilliseconds(10), cancellationToken).ConfigureAwait(false);
+            }
+
+            throw new InvalidOperationException("device vanished while emitting");
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    /// <summary>A sink whose pending write ends by observing run cancellation.</summary>
+    private sealed class CancellationAwareSink : ISegmentSink
+    {
+        private readonly TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Entered => this.entered.Task;
+
+        public bool CancellationObserved { get; private set; }
+
+        public async ValueTask EmitAsync(Segment segment, CancellationToken cancellationToken)
+        {
+            this.entered.TrySetResult();
+
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                this.CancellationObserved = true;
+                throw;
             }
         }
 

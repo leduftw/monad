@@ -1,0 +1,310 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+
+jobs:
+  preflight:
+    name: Release preflight
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: "**/packages.lock.json"
+      - name: Validate version
+        id: version
+        shell: bash
+        run: |
+          version=$(sed -n 's:.*<Version>\([^<][^<]*\)</Version>.*:\1:p' Monad/Monad.csproj)
+          test -n "$version"
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match project version $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: dotnet restore Monad.slnx --locked-mode
+      - run: dotnet format Monad.slnx --no-restore --verify-no-changes
+
+  test:
+    name: Release tests (${{ matrix.os }})
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: "**/packages.lock.json"
+      - run: dotnet restore Monad.slnx --locked-mode
+      - run: dotnet test Monad.slnx --configuration Release --no-restore
+
+  build:
+    name: Build (${{ matrix.rid }})
+    needs: [preflight, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: osx-arm64
+            os: macos-15
+          - rid: osx-x64
+            os: macos-15-intel
+          - rid: linux-arm64
+            os: ubuntu-22.04-arm
+          - rid: linux-x64
+            os: ubuntu-22.04
+          - rid: win-arm64
+            os: windows-11-arm
+          - rid: win-x64
+            os: windows-2025
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: "**/packages.lock.json"
+      - name: Install Linux capture client
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes pulseaudio-utils
+      - name: Package
+        shell: bash
+        run: ./scripts/package-release.sh "${{ matrix.rid }}" artifacts "${{ needs.preflight.outputs.version }}"
+      - name: Smoke-test archive
+        shell: bash
+        run: ./scripts/smoke-package.sh "${{ matrix.rid }}" artifacts/* "${{ needs.preflight.outputs.version }}"
+      - name: Smoke-test Unix installer
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./scripts/smoke-installer.sh artifacts
+      - name: Smoke-test Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/smoke-installer.ps1 artifacts
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: monad-${{ matrix.rid }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [preflight, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: monad-*
+          merge-multiple: true
+          path: dist
+      - name: Verify assets and generate checksums
+        shell: bash
+        run: |
+          expected=$(cat <<'EOF'
+          monad-linux-arm64.tar.gz
+          monad-linux-x64.tar.gz
+          monad-macos-arm64.zip
+          monad-macos-x64.zip
+          monad-windows-arm64.zip
+          monad-windows-x64.zip
+          EOF
+          )
+          actual=$(find dist -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort)
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Unexpected release assets" >&2
+            echo "$actual" >&2
+            exit 1
+          fi
+          install -m 755 install.sh dist/monad-installer.sh
+          install -m 644 install.ps1 dist/monad-installer.ps1
+          (cd dist && sha256sum monad-* > SHA256SUMS)
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: Create draft and publish it atomically
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            is_draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)
+            if [[ "$is_draft" != true ]]; then
+              echo "Release $GITHUB_REF_NAME is already published and will not be mutated" >&2
+              exit 1
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --verify-tag \
+              --draft \
+              --title "Monad $GITHUB_REF_NAME" \
+              --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" --clobber dist/*
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+
+  publish-homebrew:
+    name: Update Homebrew tap
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [preflight, release]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: leduftw/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          path: tap
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: monad-*
+          merge-multiple: true
+          path: dist
+      - name: Generate formula from released assets
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        shell: bash
+        run: |
+          sha() { shasum -a 256 "dist/$1" | awk '{ print $1 }'; }
+          mkdir -p tap/Formula
+          cat > tap/Formula/monad.rb <<EOF
+          class Monad < Formula
+            desc "Watches what your machine is playing and logs it as a timeline"
+            homepage "https://github.com/leduftw/monad"
+            version "$VERSION"
+            license "MIT"
+
+            on_macos do
+              depends_on macos: :sonoma
+              if Hardware::CPU.arm?
+                url "https://github.com/leduftw/monad/releases/download/v$VERSION/monad-macos-arm64.zip"
+                sha256 "$(sha monad-macos-arm64.zip)"
+              else
+                url "https://github.com/leduftw/monad/releases/download/v$VERSION/monad-macos-x64.zip"
+                sha256 "$(sha monad-macos-x64.zip)"
+              end
+            end
+
+            on_linux do
+              depends_on "pulseaudio"
+              if Hardware::CPU.arm?
+                url "https://github.com/leduftw/monad/releases/download/v$VERSION/monad-linux-arm64.tar.gz"
+                sha256 "$(sha monad-linux-arm64.tar.gz)"
+              else
+                url "https://github.com/leduftw/monad/releases/download/v$VERSION/monad-linux-x64.tar.gz"
+                sha256 "$(sha monad-linux-x64.tar.gz)"
+              end
+            end
+
+            def install
+              odie "Monad requires macOS 14.2 or newer" if OS.mac? && MacOS.version < "14.2"
+              bin.install "monad"
+              bin.install "monad-audiotap" if OS.mac?
+              pkgshare.install "monad.example.json"
+              doc.install "LICENSE", "README.md", "THIRD-PARTY-NOTICES.md",
+                          "DOTNET-LICENSE.txt", "DOTNET-THIRD-PARTY-NOTICES.txt"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/monad version")
+            end
+          end
+          EOF
+          ruby -c tap/Formula/monad.rb
+      - name: Smoke-test formula
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        shell: bash
+        run: |
+          brew install --formula ./tap/Formula/monad.rb
+          test "$("$(brew --prefix monad)/bin/monad" version)" = "monad ${{ needs.preflight.outputs.version }}"
+          test -x "$(brew --prefix monad)/bin/monad-audiotap"
+          test -f "$(brew --prefix monad)/share/monad/monad.example.json"
+      - name: Commit and push formula
+        shell: bash
+        run: |
+          cd tap
+          if [[ -z $(git status --porcelain -- Formula/monad.rb) ]]; then
+            echo "Formula already matches Monad ${{ needs.preflight.outputs.version }}"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/monad.rb
+          git commit -m "Update monad to ${{ needs.preflight.outputs.version }}"
+          git push
+
+  publish-winget:
+    name: Submit WinGet update
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [preflight, release]
+    runs-on: windows-2025
+    steps:
+      - name: Check WinGet credential
+        id: credential
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINGET_TOKEN)) {
+            Write-Output "::notice::WINGET_TOKEN is not configured; skipping WinGet submission."
+            "configured=false" | Out-File $env:GITHUB_OUTPUT -Append
+          } else {
+            "configured=true" | Out-File $env:GITHUB_OUTPUT -Append
+          }
+      - name: Download verified WingetCreate
+        if: steps.credential.outputs.configured == 'true'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/microsoft/winget-create/releases/download/v1.12.13.0/wingetcreate.exe"
+          $expected = "24042bd37915805615e6cf969ac57c6439124c3fe85823327f5f3fb24bd9ffea"
+          Invoke-WebRequest $url -OutFile wingetcreate.exe
+          $actual = (Get-FileHash wingetcreate.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "WingetCreate checksum mismatch: $actual"
+          }
+      - name: Submit portable-package update
+        if: steps.credential.outputs.configured == 'true'
+        env:
+          WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        shell: pwsh
+        run: |
+          $version = "${{ needs.preflight.outputs.version }}"
+          $base = "https://github.com/leduftw/monad/releases/download/v$version"
+          $urls = @(
+            "$base/monad-windows-x64.zip",
+            "$base/monad-windows-arm64.zip"
+          )
+          $output = .\wingetcreate.exe update leduftw.monad --version $version --urls $urls --submit 2>&1
+          $code = $LASTEXITCODE
+          $output | Write-Output
+          if ($code -ne 0 -and "$output" -match "was not found") {
+            Write-Output "::notice::leduftw.monad needs its one-time initial WinGet submission; release assets are ready."
+            exit 0
+          }
+          exit $code

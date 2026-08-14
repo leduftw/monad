@@ -95,6 +95,16 @@ catch (Exception ex) when (ex is MonadFatalException
     Console.Error.WriteLine($"monad: {ex.Message}");
     return 1;
 }
+finally
+{
+    // Keep the registrations rooted for the entire run. In optimized Release
+    // builds an otherwise-unused local can be collected early, which restores
+    // the default SIGTERM action and skips the final segment flush entirely.
+    foreach (PosixSignalRegistration signal in signals)
+    {
+        signal.Dispose();
+    }
+}
 
 async Task<int> MonitorAsync(MonadOptions opts, MonadLog logger, CancellationToken cancellationToken)
 {

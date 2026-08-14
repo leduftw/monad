@@ -7,6 +7,10 @@
     <AssemblyName>monad</AssemblyName>
     <RootNamespace>Monad</RootNamespace>
     <Version>2.0.0</Version>
+    <!-- Keep the release restore graph in packages.lock.json for every archive
+         target. PublishSingleFile also locks the SDK's bundling task package. -->
+    <RuntimeIdentifiers>osx-arm64;osx-x64;linux-arm64;linux-x64;win-arm64;win-x64</RuntimeIdentifiers>
+    <PublishSingleFile>true</PublishSingleFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -29,30 +33,42 @@
 
   <PropertyGroup>
     <IsMacOsBuild Condition="$([MSBuild]::IsOSPlatform('OSX'))">true</IsMacOsBuild>
+    <!-- A macOS host can cross-publish either architecture. Key the helper by
+         the target RID so an earlier arm64 build can never leak into an x64
+         archive (or into a non-macOS publish made from a Mac). -->
+    <IsMacOsTarget Condition="'$(IsMacOsBuild)' == 'true' and ('$(RuntimeIdentifier)' == '' or '$(RuntimeIdentifier)' == 'osx-arm64' or '$(RuntimeIdentifier)' == 'osx-x64')">true</IsMacOsTarget>
+    <AudioTapArchitecture Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">arm64</AudioTapArchitecture>
+    <AudioTapArchitecture Condition="'$(RuntimeIdentifier)' == 'osx-x64'">x86_64</AudioTapArchitecture>
+    <AudioTapBuildVariant Condition="'$(RuntimeIdentifier)' == ''">host</AudioTapBuildVariant>
+    <AudioTapBuildVariant Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</AudioTapBuildVariant>
     <AudioTapName>monad-audiotap</AudioTapName>
     <!-- BaseIntermediateOutputPath, not IntermediateOutputPath: the latter is
          only defined once the common targets are imported, which happens after
          this runs, and an empty value would drop the binary in the source tree. -->
-    <AudioTapBinary>$(BaseIntermediateOutputPath)audiotap/$(AudioTapName)</AudioTapBinary>
+    <AudioTapBinary>$(BaseIntermediateOutputPath)audiotap/$(AudioTapBuildVariant)/$(AudioTapName)</AudioTapBinary>
     <!-- Process taps require macOS 14.2. -->
     <AudioTapDeploymentTarget>14.2</AudioTapDeploymentTarget>
+    <!-- Development builds remain usable without Xcode. Release packaging sets
+         RequireAudioTapSidecar=true so a missing helper fails the build. -->
+    <AudioTapContinueOnError Condition="'$(RequireAudioTapSidecar)' == 'true'">false</AudioTapContinueOnError>
+    <AudioTapContinueOnError Condition="'$(AudioTapContinueOnError)' == ''">true</AudioTapContinueOnError>
   </PropertyGroup>
 
-  <ItemGroup Condition="'$(IsMacOsBuild)' == 'true'">
+  <ItemGroup Condition="'$(IsMacOsTarget)' == 'true'">
     <AudioTapSource Include="$(MSBuildThisFileDirectory)..\native\macos\AudioTap\*.swift" />
   </ItemGroup>
 
   <Target Name="BuildAudioTapSidecar"
           BeforeTargets="BeforeBuild"
-          Condition="'$(IsMacOsBuild)' == 'true' and '$(SkipAudioTapSidecar)' != 'true'"
+          Condition="'$(IsMacOsTarget)' == 'true' and '$(SkipAudioTapSidecar)' != 'true'"
           Inputs="@(AudioTapSource)"
           Outputs="$(AudioTapBinary)">
-    <MakeDir Directories="$(BaseIntermediateOutputPath)audiotap" />
-    <Exec Command="swiftc -O -target `uname -m`-apple-macos$(AudioTapDeploymentTarget) -o &quot;$(AudioTapBinary)&quot; @(AudioTapSource->'&quot;%(FullPath)&quot;', ' ')"
-          ContinueOnError="true">
+    <MakeDir Directories="$(BaseIntermediateOutputPath)audiotap/$(AudioTapBuildVariant)" />
+    <Exec Command="arch=&quot;$(AudioTapArchitecture)&quot;; if [ -z &quot;$arch&quot; ]; then arch=`uname -m`; fi; swiftc -O -target &quot;$arch-apple-macos$(AudioTapDeploymentTarget)&quot; -o &quot;$(AudioTapBinary)&quot; @(AudioTapSource->'&quot;%(FullPath)&quot;', ' ')"
+          ContinueOnError="$(AudioTapContinueOnError)">
       <Output TaskParameter="ExitCode" PropertyName="AudioTapExitCode" />
     </Exec>
-    <Warning Condition="'$(AudioTapExitCode)' != '0'"
+    <Warning Condition="'$(AudioTapExitCode)' != '0' and '$(RequireAudioTapSidecar)' != 'true'"
              Text="Could not build $(AudioTapName) (swiftc exited $(AudioTapExitCode)). Install the Xcode command line tools with 'xcode-select --install'; until then Monad cannot capture audio on this machine." />
   </Target>
 
@@ -60,7 +76,7 @@
        never runs its dependencies, and the binary cannot exist on a first build. -->
   <Target Name="CopyAudioTapSidecar"
           AfterTargets="BuildAudioTapSidecar"
-          Condition="Exists('$(AudioTapBinary)')"
+          Condition="'$(SkipAudioTapSidecar)' != 'true' and Exists('$(AudioTapBinary)')"
           Inputs="$(AudioTapBinary)"
           Outputs="$(OutDir)$(AudioTapName)">
     <Copy SourceFiles="$(AudioTapBinary)" DestinationFolder="$(OutDir)" />
@@ -70,7 +86,7 @@
 
   <Target Name="PublishAudioTapSidecar"
           AfterTargets="Publish"
-          Condition="'$(IsMacOsBuild)' == 'true' and Exists('$(AudioTapBinary)')">
+          Condition="'$(IsMacOsTarget)' == 'true' and '$(SkipAudioTapSidecar)' != 'true' and Exists('$(AudioTapBinary)')">
     <Copy SourceFiles="$(AudioTapBinary)" DestinationFolder="$(PublishDir)" />
     <Exec Command="chmod +x &quot;$(PublishDir)$(AudioTapName)&quot;" />
   </Target>

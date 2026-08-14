@@ -17,11 +17,12 @@ namespace Monad.Audio.Sources;
 /// capture on Linux.
 /// </summary>
 /// <remarks>
-/// The helper's stdin is redirected and never written to, which is how it
-/// notices that Monad has exited: the pipe closes and it reads EOF. If the
-/// helper stops on its own -- the macOS sidecar does this when the output
-/// device changes in a way it cannot recover from -- it is restarted with a
-/// bounded backoff rather than taking the whole session down.
+/// The helper's stdin is redirected and never written to. The macOS sidecar
+/// treats EOF on that pipe as a graceful shutdown request; helpers that do not
+/// watch stdin are killed after a short grace period. If the helper stops on its
+/// own -- the macOS sidecar does this when the output device changes in a way it
+/// cannot recover from -- it is restarted with a bounded backoff rather than
+/// taking the whole session down.
 /// </remarks>
 public sealed class ExternalProcessAudioSource(
     string description,
@@ -131,12 +132,16 @@ public sealed class ExternalProcessAudioSource(
 
     private sealed class Session : IAsyncDisposable
     {
+        private static readonly TimeSpan GracefulShutdownTimeout = TimeSpan.FromSeconds(2);
+
         private readonly Process process;
         private readonly Stream stdout;
         private readonly Action<string> log;
         private readonly byte[] bytes = new byte[ReadBufferBytes];
+        private readonly object terminationGate = new();
 
         private CancellationTokenRegistration shutdown;
+        private Task? terminationTask;
 
         private Session(Process process, Stream stdout, AudioFormat format, Action<string> log)
         {
@@ -148,24 +153,15 @@ public sealed class ExternalProcessAudioSource(
         }
 
         /// <summary>
-        /// Closes the helper's stdin, which is its cue to exit. Needed because a
-        /// pending pipe read on Unix does not observe cancellation: when nothing
-        /// is playing the helper sends nothing, and the read would otherwise
-        /// block until audio resumed -- possibly for hours.
+        /// Starts helper shutdown. Closing stdin gives the macOS sidecar a chance
+        /// to clean up its tap, then a bounded fallback kills helpers such as
+        /// parec that neither watch stdin nor produce more output. The fallback
+        /// is needed because a pending pipe read does not reliably observe
+        /// cancellation on every Unix platform.
         /// </summary>
         private void RequestHelperExit()
         {
-            try
-            {
-                if (!this.process.HasExited)
-                {
-                    this.process.StandardInput.Close();
-                }
-            }
-            catch (Exception ex) when (ex is InvalidOperationException or IOException or ObjectDisposedException)
-            {
-                // Already gone, or the pipe is closed; either way there is nothing to wake.
-            }
+            _ = this.TerminateAsync();
         }
 
         public AudioFormat Format { get; }
@@ -341,7 +337,7 @@ public sealed class ExternalProcessAudioSource(
                 {
                     process.StandardInput.Close();
 
-                    using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(2));
+                    using CancellationTokenSource timeout = new(GracefulShutdownTimeout);
                     await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
                 }
             }
@@ -365,10 +361,22 @@ public sealed class ExternalProcessAudioSource(
             process.Dispose();
         }
 
+        /// <summary>
+        /// Starts process termination exactly once so cancellation and disposal
+        /// can race without closing or disposing the same process independently.
+        /// </summary>
+        private Task TerminateAsync()
+        {
+            lock (this.terminationGate)
+            {
+                return this.terminationTask ??= TerminateAsync(this.process);
+            }
+        }
+
         public async ValueTask DisposeAsync()
         {
             await this.shutdown.DisposeAsync().ConfigureAwait(false);
-            await TerminateAsync(this.process).ConfigureAwait(false);
+            await this.TerminateAsync().ConfigureAwait(false);
         }
     }
 }
