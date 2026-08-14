@@ -7,6 +7,31 @@ $ErrorActionPreference = "Stop"
 $previousProgressPreference = $ProgressPreference
 $ProgressPreference = "SilentlyContinue"
 
+function Move-MonadExecutable {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Source,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Destination
+    )
+
+    $maximumAttempts = 20
+
+    for ($attempt = 1; $attempt -le $maximumAttempts; $attempt++) {
+        try {
+            Move-Item $Source $Destination -Force
+            return
+        } catch {
+            if ($attempt -eq $maximumAttempts) {
+                throw "monad installer: could not replace $Destination. Stop any running monad process and retry. Last error: $($_.Exception.Message)"
+            }
+
+            Start-Sleep -Milliseconds 250
+        }
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = "latest"
 }
@@ -80,7 +105,7 @@ try {
     $stagedExecutable = Join-Path $InstallDir (".monad." + [guid]::NewGuid() + ".new.exe")
     Copy-Item $source $stagedExecutable
     $installedVersion = & $stagedExecutable version
-    Move-Item $stagedExecutable $destination -Force
+    Move-MonadExecutable -Source $stagedExecutable -Destination $destination
     $stagedExecutable = $null
 
     if ($env:MONAD_NO_PATH_UPDATE -ne "1") {
