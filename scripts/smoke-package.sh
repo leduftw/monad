@@ -16,7 +16,22 @@ work_dir=$(mktemp -d "${TMPDIR:-/tmp}/monad-package-smoke.XXXXXX")
 payload="$work_dir/payload"
 
 cleanup() {
-  rm -rf -- "$work_dir"
+  local attempt
+
+  # Windows can retain an executable image briefly after the process exits.
+  # Cleanup is best-effort on an ephemeral runner and must not turn a passed
+  # package smoke into a failure, but retry first so the temp files normally
+  # disappear before the job ends.
+  for ((attempt = 1; attempt <= 20; attempt++)); do
+    if rm -rf -- "$work_dir" 2>/dev/null; then
+      return 0
+    fi
+
+    sleep 0.25
+  done
+
+  echo "warning: could not remove temporary package smoke directory: $work_dir" >&2
+  return 0
 }
 trap cleanup EXIT
 
