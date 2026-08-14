@@ -54,6 +54,16 @@ dotnet run --project Monad
 
 Press Ctrl+C to stop.
 
+## Repository hooks
+
+Git does not enable tracked hooks automatically. After cloning, run:
+
+```powershell
+git config core.hooksPath .githooks
+```
+
+The pre-commit hook keeps `AGENTS.md` and `CLAUDE.md` byte-identical so Codex and Claude Code use the same repository instructions.
+
 ## Running tests
 
 ```powershell
