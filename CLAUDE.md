@@ -76,6 +76,13 @@ combinations that cannot work.
   44.1 kHz. Believing it stretches every clip by 8.8% — audible as nothing at all,
   but enough that recognition never matches anything. Verify with a known tone:
   play a 440 Hz sine, capture it, and check it comes back at 440 Hz.
+- **`install.sh` keeps its whole body in `main`, called on the last line.** README
+  tells people to pipe it into `sh`, and a shell reading a pipe runs each command
+  as it arrives, so a dropped connection would otherwise execute whichever prefix
+  had arrived. The indentation is load-bearing: unwrapped, a truncated download
+  can install the binary without printing the version or the PATH advice, and can
+  leave a temp directory behind if it stops between `mktemp` and the `trap`.
+  It is also plain POSIX for the same reason — `/bin/sh` is dash on Debian.
 
 ## Conventions
 
