@@ -1,0 +1,40 @@
+# Facts about monad for leduftw/playbook. Everything else comes from the playbook.
+name = "monad"
+published = true
+
+[[check]]
+stack = "dotnet"
+solution = "Monad.slnx"
+
+[release]
+stack = "dotnet"
+project = "Monad/Monad.csproj"
+# Core Audio process taps are Objective-C only, so macOS capture runs in a Swift
+# helper that ships beside the main binary.
+macos-binaries = ["monad-audiotap"]
+files = ["LICENSE", "README.md", "THIRD-PARTY-NOTICES.md", "monad.example.json"]
+version-command = ["version"]
+version-output = "monad {version}"
+# Process taps need macOS 14.2.
+macos-minimum = "14.2"
+apt = ["pulseaudio-utils"]
+channels = ["homebrew", "winget", "installers"]
+macos-publish-properties = ["-p:RequireAudioTapSidecar=true", "-p:SkipAudioTapSidecar=false"]
+other-publish-properties = ["-p:SkipAudioTapSidecar=true"]
+
+[release.smoke]
+all = ["{bin} --config {dir}/monad.example.json help"]
+unix = ["scripts/smoke-posix-signals.sh {bin}"]
+macos = ["{dir}/monad-audiotap help", "{bin} devices"]
+
+[release.homebrew]
+desc = "Watches what your machine is playing and logs it as a timeline"
+linux-dependencies = ["pulseaudio"]
+install = [
+  'pkgshare.install "monad.example.json"',
+  'doc.install "LICENSE", "README.md", "THIRD-PARTY-NOTICES.md", "DOTNET-LICENSE.txt", "DOTNET-THIRD-PARTY-NOTICES.txt"',
+]
+
+[release.installer]
+notes = ["Set AUDD_API_TOKEN, then run: monad"]
+linux-notes = ["Linux capture also needs parec (pulseaudio-utils) or ffmpeg."]
