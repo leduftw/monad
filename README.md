@@ -38,10 +38,9 @@ with PulseAudio and with PipeWire's PulseAudio compatibility layer.
 winget install leduftw.monad
 ```
 
-WinGet publication goes through Microsoft's moderated repository. If the first
-submission is still being reviewed, use the PowerShell installer below. Once
-the package and its release credential are in place, later releases update it
-automatically.
+Each release is submitted to Microsoft's moderated WinGet repository, so a new
+version can take a while to appear there. The PowerShell installer below always
+installs the latest release.
 
 ### Direct installer
 
@@ -306,8 +305,10 @@ The macOS helper can be exercised on its own:
 
 Set `MONAD_AUDIOTAP_PATH` to point at a helper built somewhere else.
 
-Release packaging and downstream Homebrew/WinGet publication are documented in
-[`RELEASING.md`](RELEASING.md).
+Releases follow [leduftw/playbook](https://github.com/leduftw/playbook): a release
+PR builds and smoke-tests every archive, and merging it publishes the release and
+updates Homebrew, WinGet and the installers. monad's specifics live in
+[`.github/playbook.toml`](.github/playbook.toml).
 
 ## Licence
 
