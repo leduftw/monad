@@ -1,6 +1,6 @@
 # Monad
 
-[![CI](https://github.com/leduftw/monad/actions/workflows/ci.yml/badge.svg)](https://github.com/leduftw/monad/actions/workflows/ci.yml)
+[![playbook](https://github.com/leduftw/monad/actions/workflows/playbook.yml/badge.svg)](https://github.com/leduftw/monad/actions/workflows/playbook.yml)
 [![Latest release](https://img.shields.io/github/v/release/leduftw/monad)](https://github.com/leduftw/monad/releases/latest)
 
 Real-time music recognition monitor. Listens to whatever your machine is
