@@ -4,17 +4,25 @@
     "net10.0": {
       "NAudio.Wasapi": {
         "type": "Direct",
-        "requested": "[2.4.0, )",
-        "resolved": "2.4.0",
-        "contentHash": "DKwpFzgJkUkge4sR+5t/DND1SbuHOJXQX3BBqnmd0n/zjM/CqBqbKA1wMXKIKdN2R1PtETVDu5C9ODPif37hhw==",
+        "requested": "[3.2.0, )",
+        "resolved": "3.2.0",
+        "contentHash": "jkT7CTrkpea+2EPvmnKrFaiKibqR0PMsbqaMoe7IeX7Okr9WYF88p41RWRwxI1hg1b8FBPBjiOj7UL9H9S5DwQ==",
         "dependencies": {
-          "NAudio.Core": "2.4.0"
+          "NAudio.Core": "3.2.0"
         }
       },
       "NAudio.Core": {
         "type": "Transitive",
-        "resolved": "2.4.0",
-        "contentHash": "VDXi1Wp1CUFgMxYyyajaG8sM9c9v5Mf2AdJkYUnksqwENSqVlrXsPe9l/mG55pNIv9eMYXGHiIxVuhS7+a3BQg=="
+        "resolved": "3.2.0",
+        "contentHash": "XmKfK+iJ9nGwQyMB412+d0CghABNwshFdO3ZRowQ7fDTOXggN9S7J69Dw70/z6DuyfhVdSgnS0FoBtUnwZRCEQ==",
+        "dependencies": {
+          "System.Numerics.Tensors": "9.0.0"
+        }
+      },
+      "System.Numerics.Tensors": {
+        "type": "Transitive",
+        "resolved": "9.0.0",
+        "contentHash": "hyJB4UlpAi19Xr9AXzu2NuagKC4lPfHObNMEAA0HmqFz2rX7wKgzeYzO/jM/eBHDhnUGFFEjk5cOoJaxqg5J4A=="
       }
     },
     "net10.0/linux-arm64": {},
