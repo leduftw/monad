@@ -1,215 +1,157 @@
 using System;
 using System.Collections.Generic;
+using System.CommandLine;
+using System.CommandLine.Parsing;
 using System.Globalization;
 using System.IO;
+using System.Linq;
+using System.Reflection;
 
 using Monad.Audio.Sources;
 
 namespace Monad.Cli;
 
-public sealed record class ParseResult(MonadOptions? Options, string? Error)
-{
-    public static ParseResult Failed(string error) => new(null, error);
+/// <summary>Something to print instead of running: the help, the version or a mistake.</summary>
+public sealed record class CliMessage(StyledText Text, bool ToError, int ExitCode);
 
-    public static ParseResult Ok(MonadOptions options) => new(options, null);
+/// <summary>What the command line resolved to: options to run with, or a message to print.</summary>
+public sealed record class CommandLineResult(MonadOptions? Options, CliMessage? Message)
+{
+    /// <summary>The parsed global color preference, including explicit boolean values.</summary>
+    public bool NoColor { get; init; }
+
+    /// <summary>The words of a failure; null when monad runs or only shows text.</summary>
+    public string? Error => this.Message is { ExitCode: not 0 } message ? message.Text.ToString() : null;
 }
 
 /// <summary>
-/// A small hand-rolled parser. Monad's surface is a handful of flags, and
-/// hand-rolling keeps the tool dependency-free and its behaviour easy to test.
+/// The command line. System.CommandLine parses it; monad prints its own help,
+/// version and mistakes, because the library's defaults break the playbook's
+/// rules: its help has no colors, its version leaves out the name, and its
+/// mistakes exit 1.
 /// </summary>
 public static class CommandLineParser
 {
     public const string TokenVariable = "AUDD_API_TOKEN";
 
+    /// <summary>The repo's GitHub description: monad's help and its repo describe it alike.</summary>
+    public const string Description = "watches what your machine is playing and logs it as a timeline";
+
+    /// <summary>Exit code for a wrong command, option or value.</summary>
+    public const int UsageError = 2;
+
+    /// <summary>Exit code for something that failed while running, such as an unreadable config file.</summary>
+    public const int Failure = 1;
+
+    /// <summary>What a bare <c>monad</c> says after its help when it has no token to monitor with.</summary>
+    public const string MissingToken = "To start monitoring, set " + TokenVariable + " or pass --token.";
+
     /// <summary>
     /// Resolves the command line together with the config file. Precedence,
     /// strongest first: command line, environment, config file, defaults.
     /// </summary>
-    public static ParseResult Parse(IReadOnlyList<string> args) =>
+    public static CommandLineResult Parse(IReadOnlyList<string> args) =>
         Parse(args, Environment.GetEnvironmentVariable, ConfigFile.Discover);
 
-    public static ParseResult Parse(
+    public static CommandLineResult Parse(
         IReadOnlyList<string> args,
         Func<string, string?> readEnvironment,
         Func<string?, (ConfigFile Config, string? Path)> discoverConfig)
     {
         ArgumentNullException.ThrowIfNull(args);
 
-        MonadCommand? command = null;
-        string? token = null;
-        string? configPath = null;
-        string? jsonlPath = null;
-        string? inputPath = null;
-        AudioSourceKind? source = null;
-        bool noRecognize = false;
-        bool verbose = false;
-        bool quiet = false;
+        Definitions cli = new();
 
-        int? windowSeconds = null;
-        int? intervalSeconds = null;
-        int? minSegmentSeconds = null;
+        // `@file` would otherwise be read as a file of more arguments.
+        ParseResult parsed = cli.Root.Parse([.. args], new ParserConfiguration { ResponseFileTokenReplacer = null });
+        return Resolve(args, readEnvironment, discoverConfig, cli, parsed) with { NoColor = parsed.GetValue(cli.NoColor) };
+    }
 
-        for (int i = 0; i < args.Count; i++)
+    private static CommandLineResult Resolve(
+        IReadOnlyList<string> args,
+        Func<string, string?> readEnvironment,
+        Func<string?, (ConfigFile Config, string? Path)> discoverConfig,
+        Definitions cli,
+        ParseResult parsed)
+    {
+        Command command = parsed.CommandResult.Command;
+
+        if (parsed.GetValue(cli.Help))
         {
-            string arg = args[i];
-
-            if (!arg.StartsWith('-'))
-            {
-                if (command is null)
-                {
-                    if (!TryParseCommand(arg, out MonadCommand parsed))
-                    {
-                        return ParseResult.Failed($"Unknown command '{arg}'.");
-                    }
-
-                    command = parsed;
-                }
-                else if (inputPath is null)
-                {
-                    inputPath = arg;
-                }
-                else
-                {
-                    return ParseResult.Failed($"Unexpected argument '{arg}'.");
-                }
-
-                continue;
-            }
-
-            // Accept both "--flag value" and "--flag=value".
-            string name = arg;
-            string? inlineValue = null;
-            int equals = arg.IndexOf('=', StringComparison.Ordinal);
-
-            if (equals > 0)
-            {
-                name = arg[..equals];
-                inlineValue = arg[(equals + 1)..];
-            }
-
-            switch (name)
-            {
-                case "--help" or "-h":
-                    command = MonadCommand.Help;
-                    break;
-
-                case "--version" or "-V":
-                    command = MonadCommand.Version;
-                    break;
-
-                case "--no-recognize" or "--dry-run":
-                    noRecognize = true;
-                    break;
-
-                case "--verbose" or "-v":
-                    verbose = true;
-                    break;
-
-                case "--quiet" or "-q":
-                    quiet = true;
-                    break;
-
-                case "--token":
-                    if (!TryTakeValue(args, ref i, inlineValue, name, out token, out string? error))
-                    {
-                        return ParseResult.Failed(error!);
-                    }
-
-                    break;
-
-                case "--config":
-                    if (!TryTakeValue(args, ref i, inlineValue, name, out configPath, out error))
-                    {
-                        return ParseResult.Failed(error!);
-                    }
-
-                    break;
-
-                case "--jsonl":
-                    if (!TryTakeValue(args, ref i, inlineValue, name, out jsonlPath, out error))
-                    {
-                        return ParseResult.Failed(error!);
-                    }
-
-                    break;
-
-                case "--input":
-                    if (!TryTakeValue(args, ref i, inlineValue, name, out inputPath, out error))
-                    {
-                        return ParseResult.Failed(error!);
-                    }
-
-                    break;
-
-                case "--source":
-                    if (!TryTakeValue(args, ref i, inlineValue, name, out string? rawSource, out error))
-                    {
-                        return ParseResult.Failed(error!);
-                    }
-
-                    if (!TryParseSource(rawSource!, out AudioSourceKind kind))
-                    {
-                        return ParseResult.Failed(
-                            $"Unknown --source '{rawSource}'. Use auto, macos-tap, wasapi or pulse.");
-                    }
-
-                    source = kind;
-                    break;
-
-                case "--window":
-                    if (!TryTakeInt(args, ref i, inlineValue, name, out windowSeconds, out error))
-                    {
-                        return ParseResult.Failed(error!);
-                    }
-
-                    break;
-
-                case "--interval":
-                    if (!TryTakeInt(args, ref i, inlineValue, name, out intervalSeconds, out error))
-                    {
-                        return ParseResult.Failed(error!);
-                    }
-
-                    break;
-
-                case "--min-segment":
-                    if (!TryTakeInt(args, ref i, inlineValue, name, out minSegmentSeconds, out error))
-                    {
-                        return ParseResult.Failed(error!);
-                    }
-
-                    break;
-
-                default:
-                    return ParseResult.Failed($"Unknown option '{name}'.");
-            }
+            return Show(HelpText.For(command, cli.Root));
         }
 
-        MonadCommand resolved = command ?? MonadCommand.Run;
+        if (parsed.Errors.Count > 0)
+        {
+            return Mistake(parsed.Errors.Select(error => error.Message));
+        }
+
+        if (parsed.GetValue(cli.ShowVersion) || command == cli.Version)
+        {
+            return Show(new StyledText().Add($"monad {Version()}\n"));
+        }
+
+        if (command == cli.HelpCommand)
+        {
+            string? topic = parsed.GetValue(cli.Topic);
+            Command? target = topic is null
+                ? cli.Root
+                : cli.Root.Subcommands.FirstOrDefault(sub => sub.Name == topic || sub.Aliases.Contains(topic));
+
+            return target is null
+                ? Mistake([$"'{topic}' is not a monad command."])
+                : Show(HelpText.For(target, cli.Root));
+        }
+
+        if (command == cli.Update)
+        {
+            return new(new MonadOptions { Command = MonadCommand.Update }, null);
+        }
+
+        MonadCommand resolved = command == cli.Devices
+            ? MonadCommand.Devices
+            : command == cli.Replay ? MonadCommand.Replay : MonadCommand.Run;
+
+        string? fileArgument = parsed.GetValue(cli.File);
+        string? fileOption = parsed.GetValue(cli.Input);
+
+        if (fileArgument is not null && fileOption is not null)
+        {
+            return Mistake(["'monad replay' takes one WAV file, either as its argument or with --input."]);
+        }
+
+        string? inputPath = fileArgument ?? fileOption;
 
         if (resolved == MonadCommand.Replay && string.IsNullOrWhiteSpace(inputPath))
         {
-            return ParseResult.Failed("'monad replay' needs the path to a WAV file.");
+            return Mistake(["'monad replay' needs the path to a WAV file."]);
         }
 
         ConfigFile file;
         string? loadedFrom;
+        string? configPath = parsed.GetValue(cli.Config);
 
         try
         {
             (file, loadedFrom) = discoverConfig(configPath);
         }
-        catch (Exception ex) when (ex is FileNotFoundException or InvalidDataException)
+        catch (Exception ex) when (!string.IsNullOrWhiteSpace(configPath) && ex is FileNotFoundException or DirectoryNotFoundException)
         {
-            return ParseResult.Failed(ex.Message);
+            // Only an explicit --config can be missing: the command line named it.
+            return Mistake([ex.Message]);
         }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return Failed(ex.Message);
+        }
+
+        AudioSourceKind? source = parsed.GetValue(cli.Source);
 
         if (source is null && file.Source is { Length: > 0 } fileSource)
         {
             if (!TryParseSource(fileSource, out AudioSourceKind fromFile))
             {
-                return ParseResult.Failed($"Config file has an unknown source '{fileSource}'.");
+                return Failed($"Config file has an unknown source '{fileSource}'.");
             }
 
             source = fromFile;
@@ -217,9 +159,9 @@ public static class CommandLineParser
 
         TuningOverrides overrides = new()
         {
-            WindowSeconds = windowSeconds,
-            IntervalSeconds = intervalSeconds,
-            MinSegmentDurationSeconds = minSegmentSeconds,
+            WindowSeconds = parsed.GetValue(cli.Window),
+            IntervalSeconds = parsed.GetValue(cli.Interval),
+            MinSegmentDurationSeconds = parsed.GetValue(cli.MinSegment),
         };
 
         MonadConfig config = overrides.ApplyTo(file.Tuning ?? new MonadConfig());
@@ -231,22 +173,66 @@ public static class CommandLineParser
         catch (ArgumentException ex)
         {
             string where = loadedFrom is null ? "Configuration" : $"Configuration ({loadedFrom})";
-            return ParseResult.Failed($"{where} is invalid: {ex.Message}");
+            string message = $"{where} is invalid: {ex.Message}";
+
+            // A tuning value named on the command line is a wrong value there;
+            // otherwise the config file is what can't be used.
+            bool fromCommandLine = overrides.WindowSeconds is not null
+                || overrides.IntervalSeconds is not null
+                || overrides.MinSegmentDurationSeconds is not null;
+
+            if (fromCommandLine)
+            {
+                try
+                {
+                    (file.Tuning ?? new MonadConfig()).Validate();
+                }
+                catch (ArgumentException)
+                {
+                    // An unrelated CLI override cannot turn a broken config
+                    // file into an argument error. A fully repaired config
+                    // already passed validation above.
+                    fromCommandLine = false;
+                }
+            }
+
+            return fromCommandLine ? Mistake([message]) : Failed(message);
         }
 
-        return ParseResult.Ok(new MonadOptions
+        string? token = parsed.GetValue(cli.Token) ?? readEnvironment(TokenVariable) ?? file.Token;
+
+        // Only a fully bare `monad` falls back to its help: WinGet's validation
+        // starts every new version that way, without a token.
+        if (args.Count == 0 && string.IsNullOrWhiteSpace(token))
         {
-            Command = resolved,
-            Token = token ?? readEnvironment(TokenVariable) ?? file.Token,
-            ConfigPath = loadedFrom,
-            JsonlPath = ExpandHome(jsonlPath ?? file.Jsonl),
-            InputPath = ExpandHome(inputPath),
-            Source = source ?? AudioSourceKind.Auto,
-            NoRecognize = noRecognize,
-            Verbose = verbose,
-            Quiet = quiet,
-            Config = config,
-        });
+            return Show(HelpText.For(cli.Root, cli.Root).Add($"\n{MissingToken}\n"));
+        }
+
+        return new(
+            new MonadOptions
+            {
+                Command = resolved,
+                Token = token,
+                ConfigPath = loadedFrom,
+                JsonlPath = ExpandHome(parsed.GetValue(cli.Jsonl) ?? file.Jsonl),
+                InputPath = ExpandHome(inputPath),
+                Source = source ?? AudioSourceKind.Auto,
+                NoRecognize = parsed.GetValue(cli.NoRecognize),
+                Verbose = parsed.GetValue(cli.Verbose),
+                Quiet = parsed.GetValue(cli.Quiet),
+                Config = config,
+            },
+            null);
+    }
+
+    /// <summary>The version monad reports, from its assembly.</summary>
+    public static string Version()
+    {
+        Assembly assembly = typeof(CommandLineParser).Assembly;
+
+        return assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+            ?? assembly.GetName().Version?.ToString()
+            ?? "unknown";
     }
 
     /// <summary>
@@ -277,18 +263,24 @@ public static class CommandLineParser
             : path;
     }
 
-    private static bool TryParseCommand(string value, out MonadCommand command)
+    private static CommandLineResult Show(StyledText text) => new(null, new CliMessage(text, ToError: false, 0));
+
+    private static CommandLineResult Mistake(IEnumerable<string> messages)
     {
-        switch (value.ToLowerInvariant())
+        StyledText text = new();
+
+        foreach (string message in messages)
         {
-            case "run": command = MonadCommand.Run; return true;
-            case "devices": command = MonadCommand.Devices; return true;
-            case "replay": command = MonadCommand.Replay; return true;
-            case "help": command = MonadCommand.Help; return true;
-            case "version": command = MonadCommand.Version; return true;
-            default: command = MonadCommand.Run; return false;
+            text.Add($"monad: {message}\n");
         }
+
+        text.Add("Run 'monad --help' for usage.\n");
+
+        return new(null, new CliMessage(text, ToError: true, UsageError));
     }
+
+    private static CommandLineResult Failed(string message) =>
+        new(null, new CliMessage(new StyledText().Add($"monad: {message}\n"), ToError: true, Failure));
 
     private static bool TryParseSource(string value, out AudioSourceKind kind)
     {
@@ -302,74 +294,182 @@ public static class CommandLineParser
         }
     }
 
-    private static bool TryTakeValue(
-        IReadOnlyList<string> args,
-        ref int index,
-        string? inlineValue,
-        string name,
-        out string? value,
-        out string? error)
+    private static AudioSourceKind? ParseSource(ArgumentResult result)
     {
-        value = inlineValue ?? (index + 1 < args.Count ? args[++index] : null);
+        string raw = result.Tokens.Count > 0 ? result.Tokens[0].Value : string.Empty;
 
-        if (string.IsNullOrEmpty(value))
+        if (TryParseSource(raw, out AudioSourceKind kind))
         {
-            value = null;
-            error = $"{name} needs a value.";
-            return false;
+            return kind;
         }
 
-        error = null;
-        return true;
+        result.AddError($"Unknown --source '{raw}'. Use auto, macos-tap, wasapi or pulse.");
+        return null;
     }
 
-    private static bool TryTakeInt(
-        IReadOnlyList<string> args,
-        ref int index,
-        string? inlineValue,
-        string name,
-        out int? value,
-        out string? error)
+    private static Option<int?> Seconds(string name, string description, int minimum = 1) => new(name)
     {
-        value = null;
-
-        if (!TryTakeValue(args, ref index, inlineValue, name, out string? raw, out error))
+        Description = description,
+        HelpName = "seconds",
+        CustomParser = result =>
         {
-            return false;
+            string raw = result.Tokens.Count > 0 ? result.Tokens[0].Value : string.Empty;
+
+            if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int seconds))
+            {
+                if (seconds < minimum)
+                {
+                    result.AddError($"{name} must be at least {minimum} seconds.");
+                    return null;
+                }
+
+                return seconds;
+            }
+
+            result.AddError($"{name} expects a whole number of seconds, but got '{raw}'.");
+            return null;
+        },
+    };
+
+    /// <summary>
+    /// Every command and option, built fresh for each parse because
+    /// System.CommandLine's symbols remember the commands they were added to.
+    /// </summary>
+    private sealed class Definitions
+    {
+        public readonly Option<string> Token = new("--token")
+        {
+            Description = $"AudD API token (or set {TokenVariable})",
+            HelpName = "token",
+        };
+
+        public readonly Option<string> Config = new("--config")
+        {
+            Description = "Config file; defaults to ./monad.json, then ~/.config/monad/config.json",
+            HelpName = "path",
+            CustomParser = result =>
+            {
+                string? path = result.Tokens.Count > 0 ? result.Tokens[0].Value : null;
+
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    result.AddError("--config needs a nonempty file path.");
+                }
+
+                return path;
+            },
+        };
+
+        public readonly Option<string> Jsonl = new("--jsonl")
+        {
+            Description = "Append each finished segment to a JSON Lines file",
+            HelpName = "path",
+        };
+
+        public readonly Option<AudioSourceKind?> Source = new("--source")
+        {
+            Description = "auto (default), macos-tap, wasapi, pulse",
+            HelpName = "name",
+            CustomParser = ParseSource,
+        };
+
+        public readonly Option<int?> Window = Seconds("--window", "Audio analysed per lookup (default 12)");
+
+        public readonly Option<int?> Interval = Seconds("--interval", "Seconds between lookups (default 15)");
+
+        public readonly Option<int?> MinSegment = Seconds("--min-segment", "Drop segments shorter than this (default 30)", minimum: 0);
+
+        public readonly Option<bool> NoRecognize = new("--no-recognize", "--dry-run")
+        {
+            Description = "Skip the API entirely; capture and levels only",
+        };
+
+        public readonly Option<bool> Verbose = new("--verbose", "-v") { Description = "Show per-window detail" };
+
+        public readonly Option<bool> Quiet = new("--quiet", "-q") { Description = "Print segments only" };
+
+        public readonly Option<string> Input = new("--input")
+        {
+            Description = "The WAV file, instead of the argument",
+            HelpName = "file.wav",
+        };
+
+        public readonly Option<bool> NoColor = new("--no-color")
+        {
+            Description = "Print without colors, like NO_COLOR=1",
+            Recursive = true,
+        };
+
+        public readonly Option<bool> Help = new("--help", "-h") { Description = "Show this help", Recursive = true };
+
+        public readonly Option<bool> ShowVersion = new("--version", "-V") { Description = "Print the version" };
+
+        public readonly Argument<string?> File = new("file.wav")
+        {
+            Description = "The recording to analyse",
+            Arity = ArgumentArity.ZeroOrOne,
+        };
+
+        public readonly Argument<string?> Topic = new("command")
+        {
+            Description = "The command to explain",
+            Arity = ArgumentArity.ZeroOrOne,
+        };
+
+        public readonly RootCommand Root = new(Description);
+
+        public readonly Command Run = new("run", "Monitor system audio (the default)");
+
+        public readonly Command Devices = new("devices", "Show the capture path and available devices");
+
+        public readonly Command Replay = new("replay", "Run a recording through the same analysis");
+
+        public readonly Command Update = new("update", "Update monad to the latest release");
+
+        public readonly Command Version = new("version", "Print the version");
+
+        public readonly Command HelpCommand = new("help", "Show this help, or the help of one command");
+
+        public Definitions()
+        {
+            // monad prints its own help and version, and has no use for directives.
+            this.Root.Options.Clear();
+            this.Root.Directives.Clear();
+
+            // With an action, the root runs without a command: that's `monad`, which monitors.
+            this.Root.SetAction(_ => 0);
+
+            Option[] monitoring =
+            [
+                this.Token, this.Config, this.Jsonl, this.Source, this.Window, this.Interval,
+                this.MinSegment, this.NoRecognize, this.Verbose, this.Quiet,
+            ];
+
+            AddOptions(this.Root, [.. monitoring, this.NoColor, this.Help, this.ShowVersion]);
+            AddOptions(this.Run, monitoring);
+            AddOptions(this.Devices, [this.Config, this.Source, this.Verbose]);
+            this.Replay.Arguments.Add(this.File);
+            AddOptions(
+                this.Replay,
+                [
+                    this.Input, this.Token, this.Config, this.Jsonl, this.Window, this.Interval,
+                    this.MinSegment, this.NoRecognize, this.Verbose, this.Quiet,
+                ]);
+            this.HelpCommand.Arguments.Add(this.Topic);
+            this.Update.Aliases.Add("upgrade");
+
+            foreach (Command command in new[] { this.Run, this.Devices, this.Replay, this.Update, this.Version, this.HelpCommand })
+            {
+                this.Root.Subcommands.Add(command);
+            }
         }
 
-        if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
+        private static void AddOptions(Command command, IEnumerable<Option> options)
         {
-            error = $"{name} expects a whole number of seconds, but got '{raw}'.";
-            return false;
+            foreach (Option option in options)
+            {
+                command.Options.Add(option);
+            }
         }
-
-        value = parsed;
-        return true;
     }
-
-    public static string Usage =>
-        """
-        monad -- watch what this machine is playing and log it as a timeline
-
-        USAGE
-          monad [run] [options]           Monitor system audio (default)
-          monad devices                   Show the capture path and available devices
-          monad replay <file.wav>         Run a recording through the same analysis
-          monad help | version
-
-        OPTIONS
-          --token <token>       AudD API token (or set AUDD_API_TOKEN)
-          --config <path>       Config file; defaults to ./monad.json then
-                                ~/.config/monad/config.json
-          --jsonl <path>        Append each finished segment to a JSON Lines file
-          --source <name>       auto (default), macos-tap, wasapi, pulse
-          --window <seconds>    Audio analysed per lookup (default 12)
-          --interval <seconds>  Seconds between lookups (default 15)
-          --min-segment <secs>  Drop segments shorter than this (default 30)
-          --no-recognize        Skip the API entirely; capture and levels only
-          -v, --verbose         Show per-window detail
-          -q, --quiet           Print segments only
-          -h, --help            Show this help
-        """;
 }

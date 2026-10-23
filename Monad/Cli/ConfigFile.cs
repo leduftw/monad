@@ -32,20 +32,36 @@ public sealed record class ConfigFile
     /// Looks for the config in the usual places. An explicit path must exist;
     /// the conventional locations are tried silently.
     /// </summary>
-    public static (ConfigFile Config, string? Path) Discover(string? explicitPath)
+    public static (ConfigFile Config, string? Path) Discover(string? explicitPath) => Discover(explicitPath, Load);
+
+    /// <summary>Uses the same discovery policy with an explicit config reader.</summary>
+    public static (ConfigFile Config, string? Path) Discover(string? explicitPath, Func<string, ConfigFile> readConfig)
     {
+        ArgumentNullException.ThrowIfNull(readConfig);
+
         if (!string.IsNullOrWhiteSpace(explicitPath))
         {
-            return File.Exists(explicitPath)
-                ? (Load(explicitPath), explicitPath)
-                : throw new FileNotFoundException($"Config file '{explicitPath}' does not exist.", explicitPath);
+            try
+            {
+                return (readConfig(explicitPath), explicitPath);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                // Name the path as it was given, not as an absolute path from the runtime.
+                throw new FileNotFoundException($"Config file '{explicitPath}' does not exist.", explicitPath, ex);
+            }
         }
 
         foreach (string candidate in DefaultPaths())
         {
-            if (File.Exists(candidate))
+            try
             {
-                return (Load(candidate), candidate);
+                return (readConfig(candidate), candidate);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                // File.Exists also returns false when access is denied. Only
+                // a missing path is optional; an unreadable config is an error.
             }
         }
 

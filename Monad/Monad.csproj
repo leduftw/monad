@@ -14,12 +14,17 @@
     <!-- The app is validated by executing every finished single-file archive;
          avoid pulling the SDK's trim/analyzer pack into the runtime lock file. -->
     <EnableSingleFileAnalyzer>false</EnableSingleFileAnalyzer>
+    <!-- monad's own messages are English, so System.CommandLine's are too, and
+         no translated resource folders end up beside the binary. -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
 
   <ItemGroup>
     <!-- Windows loopback capture. Compiles everywhere, guarded at runtime, so
          the Windows path keeps getting type-checked on macOS and Linux too. -->
     <PackageReference Include="NAudio.Wasapi" Version="2.4.0" />
+    <!-- Parses the command line; monad prints its own help, version and errors. -->
+    <PackageReference Include="System.CommandLine" Version="2.0.13" />
   </ItemGroup>
 
   <!-- ==================================================================

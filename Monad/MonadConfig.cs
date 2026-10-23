@@ -119,17 +119,20 @@ public sealed record class MonadConfig
             this.MinLeaderShare is > 0.0 and <= 1.0,
             "minLeaderShare must be greater than 0 and at most 1.");
 
+        double[] weights = this.VoteWeightsNewestToOldest
+            ?? throw new ArgumentException("voteWeightsNewestToOldest must not be null.");
+
         Require(
-            this.VoteWeightsNewestToOldest.Length == this.RingBufferMaxSamples,
-            $"voteWeightsNewestToOldest has {this.VoteWeightsNewestToOldest.Length} entries "
+            weights.Length == this.RingBufferMaxSamples,
+            $"voteWeightsNewestToOldest has {weights.Length} entries "
             + $"but ringBufferMaxSamples is {this.RingBufferMaxSamples}; they must match.");
 
         Require(
-            this.VoteWeightsNewestToOldest.All(weight => weight >= 0.0 && !double.IsNaN(weight)),
+            weights.All(weight => weight >= 0.0 && !double.IsNaN(weight)),
             "voteWeightsNewestToOldest must all be non-negative numbers.");
 
         Require(
-            this.VoteWeightsNewestToOldest.Any(weight => weight > 0.0),
+            weights.Any(weight => weight > 0.0),
             "voteWeightsNewestToOldest must contain at least one positive weight.");
 
         Require(
@@ -138,7 +141,7 @@ public sealed record class MonadConfig
             + $"silenceEnterDbfsThreshold ({this.SilenceEnterDbfsThreshold}) for hysteresis to work.");
 
         Require(
-            this.RingBufferMaxAgeSeconds >= this.RingBufferMaxSamples * this.IntervalSeconds,
+            this.RingBufferMaxAgeSeconds >= (long)this.RingBufferMaxSamples * this.IntervalSeconds,
             $"ringBufferMaxAgeSeconds ({this.RingBufferMaxAgeSeconds}) is shorter than the "
             + $"{this.RingBufferMaxSamples} samples it should hold at {this.IntervalSeconds}s apart, "
             + "so votes would expire unpredictably.");

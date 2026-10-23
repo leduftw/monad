@@ -9,7 +9,21 @@ using Monad.Audio;
 using Monad.Output;
 using Monad.Recognition;
 
+using Xunit;
+
 namespace Monad.Tests;
+
+/// <summary>Reports a real skipped test when its fixture needs a Unix host.</summary>
+public sealed class UnixFactAttribute : FactAttribute
+{
+    public UnixFactAttribute()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            this.Skip = "This fixture requires a Unix host.";
+        }
+    }
+}
 
 /// <summary>Replays a scripted sequence of outcomes and keeps what it was sent.</summary>
 public sealed class FakeRecognizer(params RecognitionOutcome[] script) : ISongRecognizer
