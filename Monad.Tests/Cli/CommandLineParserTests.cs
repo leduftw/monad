@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 
 using FluentAssertions;
@@ -69,6 +70,31 @@ public sealed class CommandLineParserTests
         // Assert
         result.Message!.ExitCode.Should().Be(CommandLineParser.Failure);
         result.Error.Should().Contain("not valid JSON");
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Parse_WithAConfigReadFailure_ReportsExitOne(bool accessDenied)
+    {
+        Exception failure = accessDenied ? new UnauthorizedAccessException("cannot read config") : new IOException("cannot read config");
+
+        CommandLineResult result = CommandLineParser.Parse([], _ => null, _ => throw failure);
+
+        result.Message!.ExitCode.Should().Be(CommandLineParser.Failure);
+        result.Message.ToError.Should().BeTrue();
+        result.Error.Should().Contain("cannot read config");
+    }
+
+    [Fact]
+    public void Parse_WithNullVoteWeights_ReportsAnInvalidConfig()
+    {
+        ConfigFile file = new() { Tuning = new MonadConfig { VoteWeightsNewestToOldest = null! } };
+
+        CliMessage message = Shown([], file);
+
+        message.ExitCode.Should().Be(CommandLineParser.Failure);
+        message.Text.ToString().Should().Contain("voteWeightsNewestToOldest");
     }
 
     [Fact]
@@ -241,22 +267,26 @@ public sealed class CommandLineParserTests
         Parse(["run", "--window", "soon"]).Error.Should().Contain("soon");
     }
 
-    [Fact]
-    public void Parse_WithTuningThatCannotWork_Fails()
+    [Theory]
+    [InlineData("60")]
+    [InlineData("600000000")]
+    public void Parse_WithTuningThatCannotWork_Fails(string interval)
     {
-        // Arrange — five samples 60s apart cannot fit in the default 120s window
-        CommandLineResult result = Parse(["run", "--interval", "60"]);
+        // Arrange — five samples this far apart cannot fit in the default 120s window
+        CommandLineResult result = Parse(["run", "--interval", interval]);
 
         // Assert — the command line asked for it, so it's a mistake there
         result.Error.Should().Contain("ringBufferMaxAgeSeconds");
         result.Message!.ExitCode.Should().Be(CommandLineParser.UsageError);
     }
 
-    [Fact]
-    public void Parse_WithAConfigFileThatCannotWork_Fails()
+    [Theory]
+    [InlineData(60)]
+    [InlineData(600000000)]
+    public void Parse_WithAConfigFileThatCannotWork_Fails(int interval)
     {
         // Arrange
-        ConfigFile file = new() { Tuning = new MonadConfig { IntervalSeconds = 60 } };
+        ConfigFile file = new() { Tuning = new MonadConfig { IntervalSeconds = interval } };
 
         // Act
         CommandLineResult result = Parse(["run"], file);
@@ -264,6 +294,43 @@ public sealed class CommandLineParserTests
         // Assert — nothing on the command line is wrong; the file can't be used
         result.Error.Should().Contain("test-config.json");
         result.Message!.ExitCode.Should().Be(CommandLineParser.Failure);
+    }
+
+    [Theory]
+    [InlineData("--window", "3")]
+    [InlineData("--interval", "3")]
+    [InlineData("--min-segment", "0")]
+    public void Parse_WithAnUnrelatedTuningOverride_KeepsTheConfigFailure(string option, string value)
+    {
+        ConfigFile file = new() { Tuning = new MonadConfig { PreferredSampleRate = 0 } };
+
+        CliMessage message = Shown([option, value], file);
+
+        message.ExitCode.Should().Be(CommandLineParser.Failure);
+        message.Text.ToString().Should().Contain("preferredSampleRate");
+    }
+
+    [Fact]
+    public void Parse_WithAnOverrideThatRepairsTheConfig_Runs()
+    {
+        ConfigFile file = new() { Tuning = new MonadConfig { IntervalSeconds = 60 } };
+
+        MonadOptions options = Ok(["run", "--interval", "15"], file);
+
+        options.Config.IntervalSeconds.Should().Be(15);
+    }
+
+    [Theory]
+    [InlineData("--window", "0")]
+    [InlineData("--interval", "0")]
+    [InlineData("--min-segment", "-1")]
+    public void Parse_WithAnInvalidTuningArgument_RejectsItBeforeReadingConfig(string option, string value)
+    {
+        CommandLineResult result = CommandLineParser.Parse(
+            [option, value], _ => null, _ => throw new InvalidDataException("broken config"));
+
+        result.Message!.ExitCode.Should().Be(CommandLineParser.UsageError);
+        result.Error.Should().Contain(option).And.NotContain("broken config");
     }
 
     // --- Precedence ---
@@ -495,6 +562,8 @@ public sealed class CommandLineParserTests
     [InlineData("help", "sing")]
     [InlineData("devices", "--token", "t")]
     [InlineData("@arguments.txt")]
+    [InlineData("--config", "")]
+    [InlineData("--config", " ")]
     public void Parse_Mistakes_ExitTwoWithAPointerToHelp(params string[] args)
     {
         CliMessage message = Shown(args, env: WithToken);
@@ -514,14 +583,34 @@ public sealed class CommandLineParserTests
         result.Error.Should().Contain("nowhere.json");
     }
 
+    [Fact]
+    public void Parse_AMissingExplicitConfigDirectory_IsAMistake()
+    {
+        CommandLineResult result = CommandLineParser.Parse(
+            ["--config", "missing/config.json"], _ => null, _ => throw new DirectoryNotFoundException("missing/config.json"));
+
+        result.Message!.ExitCode.Should().Be(CommandLineParser.UsageError);
+        result.Error.Should().Contain("missing/config.json");
+    }
+
     [Theory]
     [InlineData(new[] { "--no-color", "-h" }, true)]
     [InlineData(new[] { "update", "--no-color" }, true)]
+    [InlineData(new[] { "--no-color=true", "help" }, true)]
+    [InlineData(new[] { "help", "--no-color=true" }, true)]
+    [InlineData(new[] { "--no-color=false", "help" }, false)]
+    [InlineData(new[] { "--no-color", "false", "help" }, false)]
     [InlineData(new[] { "--", "--no-color" }, false)]
     [InlineData(new[] { "-v" }, false)]
-    public void NoColorRequested_FindsTheFlagAnywhereBeforeADoubleDash(string[] args, bool expected)
+    public void Parse_UsesTheLibrarysColorFlagValue(string[] args, bool expected)
     {
-        CommandLineParser.NoColorRequested(args).Should().Be(expected);
+        Parse(args).NoColor.Should().Be(expected);
+    }
+
+    [Fact]
+    public void Parse_WithAnInvalidColorValue_ReportsAMistake()
+    {
+        Shown(["--no-color=maybe"]).ExitCode.Should().Be(CommandLineParser.UsageError);
     }
 
     [Fact]

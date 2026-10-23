@@ -45,15 +45,9 @@ public sealed class TerminalColorsTests
             .Should().BeFalse();
     }
 
-    [Fact]
+    [UnixFact]
     public void Allowed_ColorsATerminal()
     {
-        // On Windows the answer also depends on the real console, which a test run doesn't have.
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
         TerminalColors.Allowed(redirected: false, noColor: false, Environment(("NO_COLOR", "")), toError: false)
             .Should().BeTrue("an empty NO_COLOR doesn't count");
     }

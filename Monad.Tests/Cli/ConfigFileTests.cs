@@ -179,6 +179,24 @@ public sealed class ConfigFileTests : IDisposable
             .Should().Throw<FileNotFoundException>();
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("explicit.json")]
+    public void Discover_WhenTheConfigCannotBeRead_PropagatesTheFailure(string? explicitPath)
+    {
+        FluentActions.Invoking(() => ConfigFile.Discover(explicitPath, _ => throw new UnauthorizedAccessException("denied")))
+            .Should().Throw<UnauthorizedAccessException>().WithMessage("denied");
+    }
+
+    [Fact]
+    public void Discover_WhenOnlyOptionalPathsAreMissing_ReturnsEmpty()
+    {
+        (ConfigFile config, string? from) = ConfigFile.Discover(null, _ => throw new DirectoryNotFoundException());
+
+        config.Should().BeSameAs(ConfigFile.Empty);
+        from.Should().BeNull();
+    }
+
     [Fact]
     public void Discover_WithNothingToFind_ReturnsEmpty()
     {

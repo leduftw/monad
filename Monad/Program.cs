@@ -23,7 +23,7 @@ if (parsed.Message is { } message)
 {
     bool colors = TerminalColors.Allowed(
         message.ToError ? Console.IsErrorRedirected : Console.IsOutputRedirected,
-        CommandLineParser.NoColorRequested(args),
+        parsed.NoColor,
         Environment.GetEnvironmentVariable,
         message.ToError);
 

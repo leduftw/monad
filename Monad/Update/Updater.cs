@@ -139,36 +139,72 @@ public static class Updater
     }
 
     /// <summary>Follows links to the file a path really names.</summary>
-    public static string Resolve(string path)
-    {
-        FileSystemInfo? target = File.ResolveLinkTarget(path, returnFinalTarget: true);
+    public static string Resolve(string path) => Resolve(path, remainingLinks: 64);
 
-        return target?.FullName ?? Path.GetFullPath(path);
+    private static string Resolve(string path, int remainingLinks)
+    {
+        string fullPath = Path.GetFullPath(path);
+        string root = Path.GetPathRoot(fullPath)!;
+        string resolved = root;
+
+        foreach (string part in fullPath[root.Length..].Split(
+            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
+        {
+            string candidate = Path.Combine(resolved, part);
+            FileSystemInfo entry = Directory.Exists(candidate) ? new DirectoryInfo(candidate) : new FileInfo(candidate);
+            FileSystemInfo? target = entry.ResolveLinkTarget(returnFinalTarget: false);
+
+            if (target is not null && remainingLinks == 0)
+            {
+                throw new IOException($"Too many symbolic links while resolving '{path}'.");
+            }
+
+            resolved = target is null ? candidate : Resolve(target.FullName, remainingLinks - 1);
+        }
+
+        return resolved;
     }
 
     /// <summary>Runs <c>monad update</c> and returns its exit code.</summary>
     public static async Task<int> RunAsync(string currentVersion, TextWriter output, TextWriter error, CancellationToken cancellationToken)
     {
+        using HttpClient http = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = RequestTimeout };
+        return await RunAsync(currentVersion, Environment.ProcessPath, http, output, error, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Runs the same update with an explicit executable and HTTP transport.</summary>
+    public static async Task<int> RunAsync(
+        string currentVersion,
+        string? executable,
+        HttpClient http,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(http);
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(error);
 
         try
         {
-            await UpdateAsync(currentVersion, output, cancellationToken).ConfigureAwait(false);
+            await UpdateAsync(currentVersion, executable, http, output, cancellationToken).ConfigureAwait(false);
             return 0;
         }
-        catch (UpdateException ex)
+        catch (Exception ex) when (ex is UpdateException or IOException or UnauthorizedAccessException)
         {
             await error.WriteLineAsync($"monad: {ex.Message}").ConfigureAwait(false);
             return 1;
         }
     }
 
-    private static async Task UpdateAsync(string currentVersion, TextWriter output, CancellationToken cancellationToken)
+    private static async Task UpdateAsync(
+        string currentVersion,
+        string? processPath,
+        HttpClient http,
+        TextWriter output,
+        CancellationToken cancellationToken)
     {
-        string executable = Environment.ProcessPath is { } processPath
-            ? Resolve(processPath)
-            : throw new UpdateException("can't tell where monad is installed.");
+        string executable = Resolve(processPath ?? throw new UpdateException("can't tell where monad is installed."));
         InstallChannel channel = ChannelOf(executable);
 
         if (channel == InstallChannel.LocalBuild)
@@ -181,7 +217,6 @@ public static class Updater
         Version current = ParseVersion(currentVersion)
             ?? throw new UpdateException($"can't read this monad's version, {currentVersion}.");
 
-        using HttpClient http = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = RequestTimeout };
         http.DefaultRequestHeaders.UserAgent.ParseAdd($"monad/{current}");
 
         Version latest = await LatestVersionAsync(http, cancellationToken).ConfigureAwait(false);
@@ -297,6 +332,10 @@ public static class Updater
             };
         }
         catch (HttpRequestException ex)
+        {
+            throw new UpdateException($"can't check WinGet for {version}: {ex.Message}");
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
             throw new UpdateException($"can't check WinGet for {version}: {ex.Message}");
         }

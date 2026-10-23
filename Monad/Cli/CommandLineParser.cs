@@ -17,6 +17,9 @@ public sealed record class CliMessage(StyledText Text, bool ToError, int ExitCod
 /// <summary>What the command line resolved to: options to run with, or a message to print.</summary>
 public sealed record class CommandLineResult(MonadOptions? Options, CliMessage? Message)
 {
+    /// <summary>The parsed global color preference, including explicit boolean values.</summary>
+    public bool NoColor { get; init; }
+
     /// <summary>The words of a failure; null when monad runs or only shows text.</summary>
     public string? Error => this.Message is { ExitCode: not 0 } message ? message.Text.ToString() : null;
 }
@@ -61,6 +64,16 @@ public static class CommandLineParser
 
         // `@file` would otherwise be read as a file of more arguments.
         ParseResult parsed = cli.Root.Parse([.. args], new ParserConfiguration { ResponseFileTokenReplacer = null });
+        return Resolve(args, readEnvironment, discoverConfig, cli, parsed) with { NoColor = parsed.GetValue(cli.NoColor) };
+    }
+
+    private static CommandLineResult Resolve(
+        IReadOnlyList<string> args,
+        Func<string, string?> readEnvironment,
+        Func<string?, (ConfigFile Config, string? Path)> discoverConfig,
+        Definitions cli,
+        ParseResult parsed)
+    {
         Command command = parsed.CommandResult.Command;
 
         if (parsed.GetValue(cli.Help))
@@ -116,17 +129,18 @@ public static class CommandLineParser
 
         ConfigFile file;
         string? loadedFrom;
+        string? configPath = parsed.GetValue(cli.Config);
 
         try
         {
-            (file, loadedFrom) = discoverConfig(parsed.GetValue(cli.Config));
+            (file, loadedFrom) = discoverConfig(configPath);
         }
-        catch (FileNotFoundException ex)
+        catch (Exception ex) when (!string.IsNullOrWhiteSpace(configPath) && ex is FileNotFoundException or DirectoryNotFoundException)
         {
             // Only an explicit --config can be missing: the command line named it.
             return Mistake([ex.Message]);
         }
-        catch (InvalidDataException ex)
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {
             return Failed(ex.Message);
         }
@@ -167,6 +181,21 @@ public static class CommandLineParser
                 || overrides.IntervalSeconds is not null
                 || overrides.MinSegmentDurationSeconds is not null;
 
+            if (fromCommandLine)
+            {
+                try
+                {
+                    (file.Tuning ?? new MonadConfig()).Validate();
+                }
+                catch (ArgumentException)
+                {
+                    // An unrelated CLI override cannot turn a broken config
+                    // file into an argument error. A fully repaired config
+                    // already passed validation above.
+                    fromCommandLine = false;
+                }
+            }
+
             return fromCommandLine ? Mistake([message]) : Failed(message);
         }
 
@@ -195,13 +224,6 @@ public static class CommandLineParser
             },
             null);
     }
-
-    /// <summary>
-    /// Whether <c>--no-color</c> appears before any <c>--</c>, read on its own
-    /// so it also governs the help and mistakes printed in its place.
-    /// </summary>
-    public static bool NoColorRequested(IEnumerable<string> args) =>
-        args.TakeWhile(arg => arg != "--").Contains("--no-color");
 
     /// <summary>The version monad reports, from its assembly.</summary>
     public static string Version()
@@ -285,7 +307,7 @@ public static class CommandLineParser
         return null;
     }
 
-    private static Option<int?> Seconds(string name, string description) => new(name)
+    private static Option<int?> Seconds(string name, string description, int minimum = 1) => new(name)
     {
         Description = description,
         HelpName = "seconds",
@@ -295,6 +317,12 @@ public static class CommandLineParser
 
             if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int seconds))
             {
+                if (seconds < minimum)
+                {
+                    result.AddError($"{name} must be at least {minimum} seconds.");
+                    return null;
+                }
+
                 return seconds;
             }
 
@@ -319,6 +347,17 @@ public static class CommandLineParser
         {
             Description = "Config file; defaults to ./monad.json, then ~/.config/monad/config.json",
             HelpName = "path",
+            CustomParser = result =>
+            {
+                string? path = result.Tokens.Count > 0 ? result.Tokens[0].Value : null;
+
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    result.AddError("--config needs a nonempty file path.");
+                }
+
+                return path;
+            },
         };
 
         public readonly Option<string> Jsonl = new("--jsonl")
@@ -338,7 +377,7 @@ public static class CommandLineParser
 
         public readonly Option<int?> Interval = Seconds("--interval", "Seconds between lookups (default 15)");
 
-        public readonly Option<int?> MinSegment = Seconds("--min-segment", "Drop segments shorter than this (default 30)");
+        public readonly Option<int?> MinSegment = Seconds("--min-segment", "Drop segments shorter than this (default 30)", minimum: 0);
 
         public readonly Option<bool> NoRecognize = new("--no-recognize", "--dry-run")
         {

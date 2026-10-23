@@ -1,5 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Net;
+using System.Net.Http;
+using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -60,14 +64,9 @@ public sealed class UpdaterTests
         Updater.PlanFor(InstallChannel.Unknown, path, windows: false).Should().BeNull();
     }
 
-    [Fact]
+    [UnixFact]
     public void Resolve_FollowsLinksBeforeTheChannelIsRead()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return; // creating links there needs developer mode
-        }
-
         // Arrange — Homebrew's bin/monad is a link into its Cellar
         string root = Directory.CreateTempSubdirectory("monad-update-test-").FullName;
 
@@ -87,6 +86,19 @@ public sealed class UpdaterTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    [UnixFact]
+    public void Resolve_FollowsDirectoryLinksBeforeTheChannelIsRead()
+    {
+        using Installation installed = new("Cellar", "monad", "2.0.2", "bin");
+        string link = Path.Combine(installed.Root, "current");
+        Directory.CreateSymbolicLink(link, Path.GetDirectoryName(installed.Executable)!);
+
+        string resolved = Updater.Resolve(Path.Combine(link, "monad"));
+
+        Updater.ChannelOf(resolved).Should().Be(InstallChannel.Homebrew);
+        resolved.Should().NotContain(Path.DirectorySeparatorChar + "current" + Path.DirectorySeparatorChar);
     }
 
     // --- Plans ---
@@ -163,14 +175,10 @@ public sealed class UpdaterTests
 
     // --- Running the plan ---
 
-    [Fact]
+    [UnixFact]
+    [UnsupportedOSPlatform("windows")]
     public async Task StartAsync_GivesTheInstallerTheCheckedVersionAndFolder()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
         // Arrange — a stand-in for the installer that records what it was given
         string folder = Directory.CreateTempSubdirectory("monad-update-test-").FullName;
 
@@ -194,14 +202,10 @@ public sealed class UpdaterTests
         }
     }
 
-    [Fact]
+    [UnixFact]
+    [UnsupportedOSPlatform("windows")]
     public async Task StartAsync_ReportsAFailedUpdate()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
         string folder = Directory.CreateTempSubdirectory("monad-update-test-").FullName;
 
         try
@@ -219,5 +223,97 @@ public sealed class UpdaterTests
         {
             Directory.Delete(folder, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenAlreadyCurrent_SucceedsAfterOneAnonymousRequest()
+    {
+        using Installation installed = new();
+        using UpdateHttpHandler handler = new(_ => RedirectTo("2.0.2"));
+        using HttpClient http = new(handler);
+        using StringWriter output = new();
+        using StringWriter error = new();
+
+        int code = await Updater.RunAsync("2.0.2", installed.Executable, http, output, error, CancellationToken.None);
+
+        code.Should().Be(0);
+        output.ToString().Should().Contain("2.0.2 is the latest version");
+        error.ToString().Should().BeEmpty();
+        handler.Requests.Should().Equal("https://github.com/leduftw/monad/releases/latest");
+        handler.HadAuthorization.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenWinGetIsNotReady_ReportsTheNewReleaseAndSucceeds()
+    {
+        using Installation installed = new("Microsoft", "WinGet", "Packages");
+        using UpdateHttpHandler handler = new(request => request.RequestUri!.Host == "github.com"
+            ? RedirectTo("2.1.0") : new HttpResponseMessage(HttpStatusCode.NotFound));
+        using HttpClient http = new(handler);
+        using StringWriter output = new();
+        using StringWriter error = new();
+
+        int code = await Updater.RunAsync("2.0.2", installed.Executable, http, output, error, CancellationToken.None);
+
+        code.Should().Be(0);
+        output.ToString().Should().Contain("2.1.0 is out, but not on WinGet yet");
+        error.ToString().Should().BeEmpty();
+        handler.Requests.Should().HaveCount(2);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RunAsync_WhenAReleaseOrWinGetRequestTimesOut_ReportsExitOne(bool latestRequest)
+    {
+        using Installation installed = new("Microsoft", "WinGet", "Packages");
+        using UpdateHttpHandler handler = new(request => latestRequest || request.RequestUri!.Host != "github.com"
+            ? throw new TaskCanceledException("request timed out") : RedirectTo("2.1.0"));
+        using HttpClient http = new(handler);
+        using StringWriter output = new();
+        using StringWriter error = new();
+
+        int code = await Updater.RunAsync("2.0.2", installed.Executable, http, output, error, CancellationToken.None);
+
+        code.Should().Be(1);
+        output.ToString().Should().BeEmpty();
+        error.ToString().Should().StartWith("monad: can't check").And.Contain("request timed out");
+        handler.Requests.Should().HaveCount(latestRequest ? 1 : 2);
+    }
+
+    private static HttpResponseMessage RedirectTo(string version) => new(HttpStatusCode.Redirect)
+    {
+        Headers = { Location = new Uri($"https://github.com/leduftw/monad/releases/tag/v{version}") },
+    };
+
+    private sealed class UpdateHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        public List<string> Requests { get; } = [];
+
+        public bool HadAuthorization { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            this.Requests.Add(request.RequestUri!.AbsoluteUri);
+            this.HadAuthorization |= request.Headers.Authorization is not null;
+            return Task.FromResult(respond(request));
+        }
+    }
+
+    private sealed class Installation : IDisposable
+    {
+        public Installation(params string[] folders)
+        {
+            this.Root = Directory.CreateTempSubdirectory("monad-update-test-").FullName;
+            this.Executable = Path.Combine([this.Root, .. folders, OperatingSystem.IsWindows() ? "monad.exe" : "monad"]);
+            Directory.CreateDirectory(Path.GetDirectoryName(this.Executable)!);
+            File.WriteAllText(this.Executable, string.Empty);
+        }
+
+        public string Root { get; }
+
+        public string Executable { get; }
+
+        public void Dispose() => Directory.Delete(this.Root, recursive: true);
     }
 }
