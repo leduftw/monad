@@ -7,8 +7,7 @@ public enum MonadCommand
     Run = 0,
     Devices = 1,
     Replay = 2,
-    Help = 3,
-    Version = 4,
+    Update = 3,
 }
 
 /// <summary>Everything the command line and config file resolved to.</summary>

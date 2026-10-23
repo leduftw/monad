@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
-using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,28 +14,29 @@ using Monad.Audio.Sources;
 using Monad.Cli;
 using Monad.Output;
 using Monad.Recognition;
+using Monad.Update;
 
-ParseResult parsed = CommandLineParser.Parse(args);
+CommandLineResult parsed = CommandLineParser.Parse(args);
 
-if (parsed.Error is { } parseError)
+// The help, the version or a mistake: printed in place of running.
+if (parsed.Message is { } message)
 {
-    Console.Error.WriteLine($"monad: {parseError}");
-    Console.Error.WriteLine();
-    Console.Error.WriteLine(CommandLineParser.Usage);
-    return 64; // EX_USAGE
+    bool colors = TerminalColors.Allowed(
+        message.ToError ? Console.IsErrorRedirected : Console.IsOutputRedirected,
+        CommandLineParser.NoColorRequested(args),
+        Environment.GetEnvironmentVariable,
+        message.ToError);
+
+    (message.ToError ? Console.Error : Console.Out).Write(message.Text.Render(colors));
+    return message.ExitCode;
 }
 
 MonadOptions options = parsed.Options!;
 
-switch (options.Command)
+if (options.Command == MonadCommand.Update)
 {
-    case MonadCommand.Help:
-        Console.WriteLine(CommandLineParser.Usage);
-        return 0;
-
-    case MonadCommand.Version:
-        Console.WriteLine($"monad {Version()}");
-        return 0;
+    return await Updater.RunAsync(CommandLineParser.Version(), Console.Out, Console.Error, CancellationToken.None)
+        .ConfigureAwait(false);
 }
 
 MonadLog log = MonadLog.ForConsole(options.Verbose, options.Quiet);
@@ -228,12 +228,3 @@ static void Report(RunSummary summary, MonadLog logger) =>
     logger.Status(
         $"\nStopped. {summary.WindowsAnalyzed} windows analysed, "
         + $"{summary.Lookups} lookups, {summary.SegmentsEmitted} segments.");
-
-static string Version()
-{
-    Assembly assembly = Assembly.GetExecutingAssembly();
-
-    return assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
-        ?? assembly.GetName().Version?.ToString()
-        ?? "unknown";
-}

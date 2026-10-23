@@ -50,7 +50,11 @@ ISystemAudioSource → RollingAudioBuffer → WindowAnalyzer → AuddRecognizer
   when the leading track was first heard) and `SegmentTracker` (Song / Silence /
   Unknown state machine with hysteresis, plus `Flush` for shutdown).
 - **Output/** — `ISegmentSink`: console, JSON Lines, and a composite.
-- **Cli/** — Hand-rolled argument parsing and the JSON config file.
+- **Cli/** — Argument parsing with System.CommandLine, and the JSON config
+  file. Monad prints its own help, version and mistakes (`HelpText`,
+  `StyledText`, `TerminalColors`) to follow the playbook's command-line rules.
+- **Update/** — `monad update`: finds how Monad was installed from its
+  executable's resolved path and runs Homebrew, WinGet or the installer.
 - **native/macos/AudioTap/** — Swift sidecar. Core Audio process taps are an
   Objective-C API, so this is a separate binary that streams PCM to stdout,
   built by an MSBuild target in `Monad.csproj`.
