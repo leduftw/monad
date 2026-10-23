@@ -174,9 +174,14 @@ public sealed class ConfigFileTests : IDisposable
     [Fact]
     public void Discover_WithAnExplicitPathThatIsMissing_Throws()
     {
+        string path = Path.Combine(this.directory, "nope.json");
+
         FluentActions
-            .Invoking(() => ConfigFile.Discover(Path.Combine(this.directory, "nope.json")))
-            .Should().Throw<FileNotFoundException>();
+            .Invoking(() => ConfigFile.Discover(path))
+            .Should().Throw<FileNotFoundException>().WithMessage($"Config file '{path}' does not exist.");
+        FluentActions
+            .Invoking(() => ConfigFile.Discover(Path.Combine(this.directory, "nowhere", "nope.json")))
+            .Should().Throw<FileNotFoundException>().WithMessage("*does not exist.");
     }
 
     [Theory]

@@ -580,7 +580,7 @@ public sealed class CommandLineParserTests
             ["--config", "nowhere.json"], _ => null, ConfigFile.Discover);
 
         result.Message!.ExitCode.Should().Be(CommandLineParser.UsageError);
-        result.Error.Should().Contain("nowhere.json");
+        result.Error.Should().Be("monad: Config file 'nowhere.json' does not exist.\nRun 'monad --help' for usage.\n");
     }
 
     [Fact]

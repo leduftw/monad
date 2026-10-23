@@ -41,7 +41,15 @@ public sealed record class ConfigFile
 
         if (!string.IsNullOrWhiteSpace(explicitPath))
         {
-            return (readConfig(explicitPath), explicitPath);
+            try
+            {
+                return (readConfig(explicitPath), explicitPath);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                // Name the path as it was given, not as an absolute path from the runtime.
+                throw new FileNotFoundException($"Config file '{explicitPath}' does not exist.", explicitPath, ex);
+            }
         }
 
         foreach (string candidate in DefaultPaths())
