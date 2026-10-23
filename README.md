@@ -76,8 +76,23 @@ monad
 
 Press Ctrl+C to stop. The segment in progress is reported before Monad exits.
 
-To update, use `brew upgrade monad`, `winget upgrade leduftw.monad`, or rerun
-the direct installer. All six platform archives are also available from the
+Without a token anywhere, a bare `monad` prints its help, says how to set one,
+and exits 0. `monad run` fails without a token instead, so a service should
+start `monad run`.
+
+### Update
+
+```sh
+monad update                        # or: monad upgrade
+```
+
+`monad update` checks for a newer release and installs it the same way Monad
+was installed: `brew upgrade leduftw/tap/monad` for Homebrew,
+`winget upgrade --id leduftw.monad` for WinGet, and the direct installer again,
+into the same folder, for everything else. A new version reaches WinGet only
+after Microsoft's review, so until it does, `monad update` says the release
+isn't on WinGet yet. A build from source isn't updated this way. All six
+platform archives are also available from the
 [latest GitHub Release](https://github.com/leduftw/monad/releases/latest).
 
 ## How it works
@@ -172,25 +187,37 @@ export DOTNET_ROOT=/opt/homebrew/opt/dotnet/libexec
 
 ## Usage
 
-```
-monad [run] [options]           Monitor system audio (default)
-monad devices                   Show the capture path and available devices
-monad replay <file.wav>         Run a recording through the same analysis
-monad help | version
+```text
+Usage: monad [options]
+       monad <command> [options]
+
+Commands:
+  run      Monitor system audio (the default)
+  devices  Show the capture path and available devices
+  replay   Run a recording through the same analysis
+  update   Update monad to the latest release
+  version  Print the version
+  help     Show this help, or the help of one command
+
+Options:
+      --token <token>            AudD API token (or set AUDD_API_TOKEN)
+      --config <path>            Config file; defaults to ./monad.json, then ~/.config/monad/config.json
+      --jsonl <path>             Append each finished segment to a JSON Lines file
+      --source <name>            auto (default), macos-tap, wasapi, pulse
+      --window <seconds>         Audio analysed per lookup (default 12)
+      --interval <seconds>       Seconds between lookups (default 15)
+      --min-segment <seconds>    Drop segments shorter than this (default 30)
+      --no-recognize, --dry-run  Skip the API entirely; capture and levels only
+  -v, --verbose                  Show per-window detail
+  -q, --quiet                    Print segments only
+      --no-color                 Print without colors, like NO_COLOR=1
+  -h, --help                     Show this help
+  -V, --version                  Print the version
 ```
 
-| Option | Meaning |
-| --- | --- |
-| `--token <token>` | AudD API token (or set `AUDD_API_TOKEN`) |
-| `--config <path>` | Config file; defaults to `./monad.json`, then `~/.config/monad/config.json` |
-| `--jsonl <path>` | Append every finished segment to a JSON Lines file |
-| `--source <name>` | `auto` (default), `macos-tap`, `wasapi`, `pulse` |
-| `--window <seconds>` | Audio analysed per lookup (default 12) |
-| `--interval <seconds>` | Seconds between lookups (default 15) |
-| `--min-segment <secs>` | Drop segments shorter than this (default 30) |
-| `--no-recognize` | Skip the API entirely; capture and levels only |
-| `-v, --verbose` | Per-window detail |
-| `-q, --quiet` | Segments only |
+`monad help <command>` shows a command's own options, such as `replay`'s file.
+Help is colored only in a terminal; `--no-color`, `NO_COLOR` or `TERM=dumb`
+turn the colors off. A mistake on the command line exits 2.
 
 `--interval` is the main lever on cost: each tick is at most one API call, and
 silent windows cost nothing at all.
