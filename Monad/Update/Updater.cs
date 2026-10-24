@@ -25,6 +25,9 @@ public enum InstallChannel
     /// <summary>Built from source (<c>bin/Debug</c> or <c>bin/Release</c>), so there's nothing to update.</summary>
     LocalBuild,
 
+    /// <summary>A local .NET tool, run from NuGet's package folder and pinned by its tool manifest.</summary>
+    LocalTool,
+
     /// <summary>Not a monad executable at all, such as <c>dotnet monad.dll</c>.</summary>
     Unknown,
 }
@@ -58,6 +61,12 @@ public static class Updater
     /// <summary>Where <c>dotnet tool install</c> keeps monad, inside the folder it installs into.</summary>
     private const string NuGetStore = "/.store/leduftw.monad/";
 
+    /// <summary>
+    /// A local tool runs straight from NuGet's package folder, inside the package
+    /// for its platform: <c>leduftw.monad.&lt;runtime&gt;/&lt;version&gt;/tools/any/&lt;runtime&gt;/</c>.
+    /// </summary>
+    private const string NuGetPlatformPackage = "/leduftw.monad.";
+
     /// <summary>Every version of monad on NuGet, once NuGet has checked and indexed it.</summary>
     private const string NuGetVersions = "https://api.nuget.org/v3-flatcontainer/leduftw.monad/index.json";
 
@@ -89,6 +98,12 @@ public static class Updater
         if (path.Contains(NuGetStore, StringComparison.OrdinalIgnoreCase))
         {
             return InstallChannel.NuGet;
+        }
+
+        if (path.Contains(NuGetPlatformPackage, StringComparison.OrdinalIgnoreCase)
+            && path.Contains("/tools/any/", StringComparison.OrdinalIgnoreCase))
+        {
+            return InstallChannel.LocalTool;
         }
 
         if (path.Contains("/bin/Debug/", StringComparison.Ordinal) || path.Contains("/bin/Release/", StringComparison.Ordinal))
@@ -250,6 +265,14 @@ public static class Updater
         if (channel == InstallChannel.LocalBuild)
         {
             throw new UpdateException($"{executable} is a local build; update it with `git pull` and `dotnet build`.");
+        }
+
+        // Its tool manifest decides the version, and usually lives in someone's
+        // repository, so monad doesn't change it behind their back.
+        if (channel == InstallChannel.LocalTool)
+        {
+            throw new UpdateException(
+                $"{executable} is a local .NET tool; update it with `dotnet tool update leduftw.monad` beside its tool manifest.");
         }
 
         UpdatePlan plan = PlanFor(channel, executable, OperatingSystem.IsWindows())

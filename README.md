@@ -105,7 +105,8 @@ NuGet, wherever the tool was installed, and the direct installer again, into
 the same folder, for everything else. A new version reaches WinGet only after
 Microsoft's review, and NuGet once it has checked and indexed the packages, so
 until then `monad update` says the release isn't there yet. A build from source
-isn't updated this way. All six platform archives are also available from the
+isn't updated this way, and neither is a local .NET tool, whose tool manifest
+pins its version. All six platform archives are also available from the
 [latest GitHub Release](https://github.com/leduftw/monad/releases/latest).
 
 ## How it works

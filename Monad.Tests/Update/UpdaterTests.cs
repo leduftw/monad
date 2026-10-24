@@ -55,6 +55,16 @@ public sealed class UpdaterTests
     }
 
     [Theory]
+    [InlineData("/Users/me/.nuget/packages/leduftw.monad.osx-arm64/2.2.0/tools/any/osx-arm64/monad")]
+    [InlineData(@"C:\Users\me\.nuget\packages\leduftw.monad.win-x64\2.2.0\tools\any\win-x64\monad.exe")]
+    public void ChannelOf_RecognisesALocalToolInNuGetsPackageFolder(string path)
+    {
+        // Not the installer's: running it into NuGet's package folder would corrupt that package.
+        Updater.ChannelOf(path).Should().Be(InstallChannel.LocalTool);
+        Updater.PlanFor(InstallChannel.LocalTool, path, windows: false).Should().BeNull();
+    }
+
+    [Theory]
     [InlineData("/usr/local/bin/monad")]
     [InlineData("/home/me/.local/bin/monad")]
     [InlineData(@"C:\Users\me\AppData\Local\Programs\monad\bin\monad.exe")]
@@ -300,6 +310,23 @@ public sealed class UpdaterTests
         output.ToString().Should().Contain("2.1.0 is out, but not on WinGet yet");
         error.ToString().Should().BeEmpty();
         handler.Requests.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task RunAsync_ForALocalTool_RefusesBeforeAnyRequest()
+    {
+        using Installation installed = new(".nuget", "packages", "leduftw.monad.osx-arm64", "2.0.2", "tools", "any", "osx-arm64");
+        using UpdateHttpHandler handler = new(_ => RedirectTo("2.1.0"));
+        using HttpClient http = new(handler);
+        using StringWriter output = new();
+        using StringWriter error = new();
+
+        int code = await Updater.RunAsync("2.0.2", installed.Executable, http, output, error, CancellationToken.None);
+
+        code.Should().Be(1);
+        output.ToString().Should().BeEmpty();
+        error.ToString().Should().Contain("is a local .NET tool").And.Contain("dotnet tool update leduftw.monad");
+        handler.Requests.Should().BeEmpty();
     }
 
     [Theory]
