@@ -19,12 +19,12 @@ public sealed class RecognitionResultTests
     {
         // Arrange / Act
         RecognitionResult result = RecognitionResult.FromAuddResult(Parse(
-            """{"artist":"Serge Gainsbourg","title":"Couleur Café","isrc":"FRZ036400450"}"""));
+            """{"artist":"Artist A","title":"Song A","isrc":"USS1Z2600001"}"""));
 
         // Assert
-        result.Artist.Should().Be("Serge Gainsbourg");
-        result.Title.Should().Be("Couleur Café");
-        result.IsrcInfo.Selected.Should().Be("FRZ036400450");
+        result.Artist.Should().Be("Artist A");
+        result.Title.Should().Be("Song A");
+        result.IsrcInfo.Selected.Should().Be("USS1Z2600001");
     }
 
     [Fact]
@@ -32,11 +32,11 @@ public sealed class RecognitionResultTests
     {
         // Arrange / Act
         RecognitionResult result = RecognitionResult.FromAuddResult(Parse(
-            """{"artist":"  Eartha Kitt  ","title":"  Je Cherche Un Homme  "}"""));
+            """{"artist":"  Artist A  ","title":"  Song A  "}"""));
 
         // Assert
-        result.Artist.Should().Be("Eartha Kitt");
-        result.Title.Should().Be("Je Cherche Un Homme");
+        result.Artist.Should().Be("Artist A");
+        result.Title.Should().Be("Song A");
     }
 
     [Theory]
@@ -70,11 +70,11 @@ public sealed class RecognitionResultTests
     {
         // Arrange / Act
         RecognitionResult result = RecognitionResult.FromAuddResult(Parse(
-            """{"artist":"Бијело Дугме","title":"Ђурђевдан"}"""));
+            """{"artist":"Исполнитель","title":"Песня"}"""));
 
         // Assert
-        result.Artist.Should().Be("Бијело Дугме");
-        result.Title.Should().Be("Ђурђевдан");
+        result.Artist.Should().Be("Исполнитель");
+        result.Title.Should().Be("Песня");
     }
 
     [Fact]
@@ -82,11 +82,11 @@ public sealed class RecognitionResultTests
     {
         // Arrange / Act
         RecognitionResult result = RecognitionResult.FromAuddResult(Parse(
-            """{"artist":"Đorđe Balašević","title":"Računajte Na Nas"}"""));
+            """{"artist":"Intérprete","title":"Canción"}"""));
 
         // Assert
-        result.Artist.Should().Be("Đorđe Balašević");
-        result.Title.Should().Be("Računajte Na Nas");
+        result.Artist.Should().Be("Intérprete");
+        result.Title.Should().Be("Canción");
     }
 
     // --- DisplayText ---
@@ -95,14 +95,14 @@ public sealed class RecognitionResultTests
     public void DisplayText_WithArtistAndTitle_JoinsThemAndAppendsTheIsrc()
     {
         // Arrange
-        RecognitionResult result = new("Isabelle Antena", "Le Poisson Des Mers Du Sud", IsrcInfo.None with
+        RecognitionResult result = new("Artist A", "Song A", IsrcInfo.None with
         {
-            Selected = "GB5EM1001054",
-            Suffix = "[ISRC: GB5EM1001054]",
+            Selected = "USS1Z2600001",
+            Suffix = "[ISRC: USS1Z2600001]",
         });
 
         // Act / Assert
-        result.DisplayText.Should().Be("Isabelle Antena - Le Poisson Des Mers Du Sud [ISRC: GB5EM1001054]");
+        result.DisplayText.Should().Be("Artist A - Song A [ISRC: USS1Z2600001]");
     }
 
     [Fact]
@@ -119,8 +119,8 @@ public sealed class RecognitionResultTests
     [Fact]
     public void DisplayText_WithOnlyAnArtist_OmitsTheSeparator()
     {
-        new RecognitionResult("Nina Simone", string.Empty, IsrcInfo.None)
-            .DisplayText.Should().Be("Nina Simone [ISRC: n/a]");
+        new RecognitionResult("Artist A", string.Empty, IsrcInfo.None)
+            .DisplayText.Should().Be("Artist A [ISRC: n/a]");
     }
 
     [Fact]

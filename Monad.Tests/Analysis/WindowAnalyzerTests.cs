@@ -135,16 +135,16 @@ public sealed class WindowAnalyzerTests
     public async Task AnalyzeAsync_WithAMatch_ProducesAKeyedSample()
     {
         // Arrange
-        FakeRecognizer recognizer = new(FakeRecognizer.Match("Nina Simone", "Feeling Good", "USSM17300123"));
+        FakeRecognizer recognizer = new(FakeRecognizer.Match("Artist A", "Song A", "USS1Z2600001"));
         WindowAnalyzer analyzer = new(recognizer, Config, MonadLog.Silent);
 
         // Act
         AnalysisStep step = await Analyze(analyzer, Tone(0.05f));
 
         // Assert
-        step.Sample!.SongKey.Should().Be("isrc:USSM17300123");
+        step.Sample!.SongKey.Should().Be("isrc:USS1Z2600001");
         step.Sample.IsNoMatch.Should().BeFalse();
-        step.Sample.DisplayText.Should().Be("Nina Simone - Feeling Good [ISRC: USSM17300123]");
+        step.Sample.DisplayText.Should().Be("Artist A - Song A [ISRC: USS1Z2600001]");
     }
 
     [Fact]

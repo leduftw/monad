@@ -18,16 +18,16 @@ public sealed class SongKeyTests
     [Fact]
     public void FromResult_WithAnIsrc_BuildsAnIsrcKey()
     {
-        SongKey.FromResult(Result("Artist", "Title", "GBAYE0601498"))
-            .Should().Be("isrc:GBAYE0601498");
+        SongKey.FromResult(Result("Artist", "Title", "USS1Z2600001"))
+            .Should().Be("isrc:USS1Z2600001");
     }
 
     [Fact]
     public void FromResult_PrefersIsrcOverArtistAndTitle()
     {
         // Arrange — the same recording under two spellings must share a key
-        string? one = SongKey.FromResult(Result("The Beatles", "Hey Jude", "GBAYE0601498"));
-        string? other = SongKey.FromResult(Result("Beatles, The", "Hey Jude (Remastered)", "GBAYE0601498"));
+        string? one = SongKey.FromResult(Result("Artist A & Artist B", "Song A", "USS1Z2600001"));
+        string? other = SongKey.FromResult(Result("Artist A and Artist B", "Song A (Remastered)", "USS1Z2600001"));
 
         // Assert
         one.Should().Be(other);
@@ -36,8 +36,8 @@ public sealed class SongKeyTests
     [Fact]
     public void FromResult_UppercasesAndTrimsTheIsrc()
     {
-        SongKey.FromResult(Result("Artist", "Title", "  gbaye0601498  "))
-            .Should().Be("isrc:GBAYE0601498");
+        SongKey.FromResult(Result("Artist", "Title", "  uss1z2600001  "))
+            .Should().Be("isrc:USS1Z2600001");
     }
 
     [Fact]
@@ -52,16 +52,16 @@ public sealed class SongKeyTests
     [Fact]
     public void FromResult_WithoutAnIsrc_BuildsATextKey()
     {
-        SongKey.FromResult(Result("Nina Simone", "Feeling Good"))
-            .Should().Be("text:NINA SIMONE|FEELING GOOD");
+        SongKey.FromResult(Result("Artist A", "Song A"))
+            .Should().Be("text:ARTIST A|SONG A");
     }
 
     [Fact]
     public void FromResult_UppercasesTextKeys()
     {
         // Arrange — matching is case-insensitive, so the key is normalised once
-        SongKey.FromResult(Result("nina simone", "feeling good"))
-            .Should().Be("text:NINA SIMONE|FEELING GOOD");
+        SongKey.FromResult(Result("artist a", "song a"))
+            .Should().Be("text:ARTIST A|SONG A");
     }
 
     [Fact]
@@ -96,22 +96,22 @@ public sealed class SongKeyTests
     [Fact]
     public void FromResult_HandlesCyrillic()
     {
-        SongKey.FromResult(Result("Бијело Дугме", "Ђурђевдан"))
-            .Should().Be("text:БИЈЕЛО ДУГМЕ|ЂУРЂЕВДАН");
+        SongKey.FromResult(Result("Исполнитель", "Песня"))
+            .Should().Be("text:ИСПОЛНИТЕЛЬ|ПЕСНЯ");
     }
 
     [Fact]
-    public void FromResult_HandlesSerbianDiacritics()
+    public void FromResult_HandlesDiacritics()
     {
-        SongKey.FromResult(Result("Đorđe Balašević", "Računajte Na Nas"))
-            .Should().Be("text:ĐORĐE BALAŠEVIĆ|RAČUNAJTE NA NAS");
+        SongKey.FromResult(Result("Intérprete", "Canción"))
+            .Should().Be("text:INTÉRPRETE|CANCIÓN");
     }
 
     [Fact]
     public void FromResult_KeepsPunctuationInTextKeys()
     {
-        SongKey.FromResult(Result("AC/DC", "T.N.T. (Live)"))
-            .Should().Be("text:AC/DC|T.N.T. (LIVE)");
+        SongKey.FromResult(Result("A/B", "C.D.E. (Live)"))
+            .Should().Be("text:A/B|C.D.E. (LIVE)");
     }
 
     [Fact]

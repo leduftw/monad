@@ -18,12 +18,12 @@ public sealed class IsrcExtractorTests
     public void Extract_WithATopLevelIsrc_SelectsIt()
     {
         // Arrange / Act
-        IsrcInfo info = IsrcExtractor.Extract(Parse("""{"isrc":"GBAYE0601498"}"""));
+        IsrcInfo info = IsrcExtractor.Extract(Parse("""{"isrc":"USS1Z2600001"}"""));
 
         // Assert
-        info.Selected.Should().Be("GBAYE0601498");
-        info.TopLevel.Should().Be("GBAYE0601498");
-        info.Suffix.Should().Be("[ISRC: GBAYE0601498]");
+        info.Selected.Should().Be("USS1Z2600001");
+        info.TopLevel.Should().Be("USS1Z2600001");
+        info.Suffix.Should().Be("[ISRC: USS1Z2600001]");
         info.HasMismatch.Should().BeFalse();
     }
 
@@ -32,23 +32,23 @@ public sealed class IsrcExtractorTests
     {
         // Arrange / Act
         IsrcInfo info = IsrcExtractor.Extract(
-            Parse("""{"spotify":{"external_ids":{"isrc":"USRC19900468"}}}"""));
+            Parse("""{"spotify":{"external_ids":{"isrc":"USS1Z2600002"}}}"""));
 
         // Assert
-        info.Selected.Should().Be("USRC19900468");
-        info.Spotify.Should().Be("USRC19900468");
-        info.Suffix.Should().Be("[ISRC: USRC19900468]");
+        info.Selected.Should().Be("USS1Z2600002");
+        info.Spotify.Should().Be("USS1Z2600002");
+        info.Suffix.Should().Be("[ISRC: USS1Z2600002]");
     }
 
     [Fact]
     public void Extract_WithOnlyAppleMusic_SelectsApple()
     {
         // Arrange / Act
-        IsrcInfo info = IsrcExtractor.Extract(Parse("""{"apple_music":{"isrc":"FRZ036400450"}}"""));
+        IsrcInfo info = IsrcExtractor.Extract(Parse("""{"apple_music":{"isrc":"USS1Z2600003"}}"""));
 
         // Assert
-        info.Selected.Should().Be("FRZ036400450");
-        info.Apple.Should().Be("FRZ036400450");
+        info.Selected.Should().Be("USS1Z2600003");
+        info.Apple.Should().Be("USS1Z2600003");
     }
 
     [Fact]
@@ -78,10 +78,10 @@ public sealed class IsrcExtractorTests
     public void Extract_UppercasesWhateverItFinds()
     {
         // Arrange / Act
-        IsrcInfo info = IsrcExtractor.Extract(Parse("""{"isrc":"gbaye0601498"}"""));
+        IsrcInfo info = IsrcExtractor.Extract(Parse("""{"isrc":"uss1z2600001"}"""));
 
         // Assert
-        info.Selected.Should().Be("GBAYE0601498");
+        info.Selected.Should().Be("USS1Z2600001");
     }
 
     [Fact]
@@ -178,7 +178,7 @@ public sealed class IsrcExtractorTests
     [Fact]
     public void Extract_TrimsSurroundingWhitespace()
     {
-        IsrcExtractor.Extract(Parse("""{"isrc":"  GBAYE0601498  "}""")).Selected.Should().Be("GBAYE0601498");
+        IsrcExtractor.Extract(Parse("""{"isrc":"  USS1Z2600001  "}""")).Selected.Should().Be("USS1Z2600001");
     }
 
     [Theory]
