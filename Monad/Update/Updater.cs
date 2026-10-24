@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -14,6 +15,9 @@ public enum InstallChannel
 {
     Homebrew,
     WinGet,
+
+    /// <summary>A .NET tool from NuGet, kept in the <c>.store</c> of the folder it was installed into.</summary>
+    NuGet,
 
     /// <summary>The one-line installer, which put monad in a folder of its own choosing.</summary>
     Installer,
@@ -51,6 +55,12 @@ public static class Updater
     private const string WinGetManifests =
         "https://raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/l/leduftw/monad";
 
+    /// <summary>Where <c>dotnet tool install</c> keeps monad, inside the folder it installs into.</summary>
+    private const string NuGetStore = "/.store/leduftw.monad/";
+
+    /// <summary>Every version of monad on NuGet, once NuGet has checked and indexed it.</summary>
+    private const string NuGetVersions = "https://api.nuget.org/v3-flatcontainer/leduftw.monad/index.json";
+
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
 
     /// <summary>Tells the channel from the executable's resolved path.</summary>
@@ -76,6 +86,11 @@ public static class Updater
             return InstallChannel.WinGet;
         }
 
+        if (path.Contains(NuGetStore, StringComparison.OrdinalIgnoreCase))
+        {
+            return InstallChannel.NuGet;
+        }
+
         if (path.Contains("/bin/Debug/", StringComparison.Ordinal) || path.Contains("/bin/Release/", StringComparison.Ordinal))
         {
             return InstallChannel.LocalBuild;
@@ -95,6 +110,15 @@ public static class Updater
         {
             InstallChannel.Homebrew => new("Homebrew", "brew", ["upgrade", "leduftw/tap/monad"], null, Detach: false),
             InstallChannel.WinGet => new("WinGet", "winget", ["upgrade", "--id", "leduftw.monad"], null, Detach: true),
+
+            // The folder holding the store covers a global install and a --tool-path one alike.
+            InstallChannel.NuGet when ToolPath(executable) is { } toolPath => new(
+                "NuGet",
+                "dotnet",
+                ["tool", "update", "--tool-path", toolPath, "leduftw.monad"],
+                null,
+                Detach: windows),
+
             InstallChannel.Installer when windows => new(
                 "the installer",
                 "powershell",
@@ -112,6 +136,14 @@ public static class Updater
                 Detach: false),
             _ => null,
         };
+    }
+
+    /// <summary>The folder a .NET tool was installed into: the one holding its <c>.store</c>.</summary>
+    private static string? ToolPath(string executable)
+    {
+        int store = executable.Replace('\\', '/').LastIndexOf(NuGetStore, StringComparison.OrdinalIgnoreCase);
+
+        return store < 0 ? null : executable[..store];
     }
 
     /// <summary>
@@ -237,6 +269,14 @@ public static class Updater
             return;
         }
 
+        if (channel == InstallChannel.NuGet && !await OnNuGetAsync(http, latest, cancellationToken).ConfigureAwait(false))
+        {
+            await output.WriteLineAsync(
+                $"monad {latest} is out, but not on NuGet yet: NuGet checks and indexes each new version first, "
+                + "which takes a few minutes.").ConfigureAwait(false);
+            return;
+        }
+
         await output.WriteLineAsync($"Updating monad {current} to {latest} with {plan.Manager}.").ConfigureAwait(false);
 
         int exitCode = await StartAsync(plan, latest, cancellationToken).ConfigureAwait(false);
@@ -338,6 +378,52 @@ public static class Updater
         catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
             throw new UpdateException($"can't check WinGet for {version}: {ex.Message}");
+        }
+    }
+
+    private static async Task<bool> OnNuGetAsync(HttpClient http, Version version, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using HttpResponseMessage response = await http.GetAsync(new Uri(NuGetVersions), cancellationToken).ConfigureAwait(false);
+
+            switch (response.StatusCode)
+            {
+                case HttpStatusCode.NotFound:
+                    return false;
+                case not HttpStatusCode.OK:
+                    throw new UpdateException($"can't check NuGet for {version}: it answered {(int)response.StatusCode}.");
+            }
+
+            string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using JsonDocument index = JsonDocument.Parse(body);
+
+            if (!index.RootElement.TryGetProperty("versions", out JsonElement versions) || versions.ValueKind != JsonValueKind.Array)
+            {
+                throw new UpdateException($"can't check NuGet for {version}: its answer lists no versions.");
+            }
+
+            foreach (JsonElement listed in versions.EnumerateArray())
+            {
+                if (listed.ValueKind == JsonValueKind.String && listed.GetString() == version.ToString())
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new UpdateException($"can't check NuGet for {version}: {ex.Message}");
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new UpdateException($"can't check NuGet for {version}: {ex.Message}");
+        }
+        catch (JsonException ex)
+        {
+            throw new UpdateException($"can't check NuGet for {version}: {ex.Message}");
         }
     }
 

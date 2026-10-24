@@ -18,7 +18,9 @@ version-output = "monad {version}"
 # Process taps need macOS 14.2.
 macos-minimum = "14.2"
 apt = ["pulseaudio-utils"]
-channels = ["homebrew", "winget", "installers"]
+channels = ["homebrew", "winget", "installers", "nuget"]
+# On NuGet the Monad ID belongs to someone else.
+package-id = "leduftw.monad"
 macos-publish-properties = ["-p:RequireAudioTapSidecar=true", "-p:SkipAudioTapSidecar=false"]
 other-publish-properties = ["-p:SkipAudioTapSidecar=true"]
 

@@ -19,6 +19,35 @@
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
 
+  <!-- NuGet: `dotnet tool install -g leduftw.monad`, since the Monad ID belongs
+       to someone else. With RuntimeIdentifiers set, the pack makes one package
+       per platform, each holding the self-contained binary a release archive
+       holds (and the helper on macOS), plus a small package that names them. -->
+  <PropertyGroup>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>monad</ToolCommandName>
+    <PackageId>leduftw.monad</PackageId>
+    <Authors>leduftw</Authors>
+    <Description>watches what your machine is playing and logs it as a timeline</Description>
+    <PackageTags>music-recognition;audio;audd;cli</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/leduftw/monad</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/leduftw/monad</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <!-- What a release archive carries beside the binary: the readme, the licence,
+       monad's third-party notices and, since every package holds the .NET
+       runtime, the runtime's licence and notices, which only Microsoft's SDK
+       puts in NetCoreRoot. -->
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\LICENSE" Pack="true" PackagePath="\" />
+    <None Include="..\THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="\" />
+    <None Include="$(NetCoreRoot)LICENSE.txt" Pack="true" PackagePath="\DOTNET-LICENSE.txt" />
+    <None Include="$(NetCoreRoot)ThirdPartyNotices.txt" Pack="true" PackagePath="\DOTNET-THIRD-PARTY-NOTICES.txt" />
+  </ItemGroup>
+
   <ItemGroup>
     <!-- Windows loopback capture. Compiles everywhere, guarded at runtime, so
          the Windows path keeps getting type-checked on macOS and Linux too. -->
@@ -72,7 +101,10 @@
           Inputs="@(AudioTapSource)"
           Outputs="$(AudioTapBinary)">
     <MakeDir Directories="$(BaseIntermediateOutputPath)audiotap/$(AudioTapBuildVariant)" />
-    <Exec Command="arch=&quot;$(AudioTapArchitecture)&quot;; if [ -z &quot;$arch&quot; ]; then arch=`uname -m`; fi; swiftc -O -target &quot;$arch-apple-macos$(AudioTapDeploymentTarget)&quot; -o &quot;$(AudioTapBinary)&quot; @(AudioTapSource->'&quot;%(FullPath)&quot;', ' ')"
+    <!-- Signed ad hoc as soon as it's built: the linker signs only arm64 code,
+         and an x86_64 copy can't be signed once it sits in a NuGet package,
+         the way the release archives' packaging signs it. -->
+    <Exec Command="arch=&quot;$(AudioTapArchitecture)&quot;; if [ -z &quot;$arch&quot; ]; then arch=`uname -m`; fi; swiftc -O -target &quot;$arch-apple-macos$(AudioTapDeploymentTarget)&quot; -o &quot;$(AudioTapBinary)&quot; @(AudioTapSource->'&quot;%(FullPath)&quot;', ' ') &amp;&amp; codesign --force --sign - &quot;$(AudioTapBinary)&quot;"
           ContinueOnError="$(AudioTapContinueOnError)">
       <Output TaskParameter="ExitCode" PropertyName="AudioTapExitCode" />
     </Exec>

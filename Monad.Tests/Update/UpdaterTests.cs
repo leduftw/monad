@@ -37,6 +37,15 @@ public sealed class UpdaterTests
     }
 
     [Theory]
+    [InlineData("/Users/me/.dotnet/tools/.store/leduftw.monad/2.2.0/leduftw.monad.osx-arm64/2.2.0/tools/any/osx-arm64/monad")]
+    [InlineData("/opt/tools/.store/leduftw.monad/2.2.0/leduftw.monad.linux-x64/2.2.0/tools/any/linux-x64/monad")]
+    [InlineData(@"C:\Users\me\.dotnet\tools\.store\leduftw.monad\2.2.0\leduftw.monad.win-x64\2.2.0\tools\any\win-x64\monad.exe")]
+    public void ChannelOf_NuGetKeepsMonadInTheToolStore(string path)
+    {
+        Updater.ChannelOf(path).Should().Be(InstallChannel.NuGet);
+    }
+
+    [Theory]
     [InlineData("/home/me/monad/Monad/bin/Debug/net10.0/monad")]
     [InlineData("/home/me/monad/Monad/bin/Release/net10.0/osx-arm64/monad")]
     [InlineData(@"C:\src\monad\Monad\bin\Debug\net10.0\monad.exe")]
@@ -114,6 +123,26 @@ public sealed class UpdaterTests
         $"{winget.Program} {string.Join(' ', winget.Arguments)}".Should().Be("winget upgrade --id leduftw.monad");
         winget.Detach.Should().BeTrue("Windows can't replace the running monad.exe");
         Updater.PlanFor(InstallChannel.LocalBuild, "/x/bin/Debug/net10.0/monad", windows: false).Should().BeNull();
+    }
+
+    [Fact]
+    public void PlanFor_NuGetUpdatesTheToolInTheFolderHoldingItsStore()
+    {
+        // Arrange — a global install and one into a folder of the user's choosing
+        string global = "/Users/me/.dotnet/tools/.store/leduftw.monad/2.2.0/leduftw.monad.osx-arm64/2.2.0/tools/any/osx-arm64/monad";
+        string folder = @"D:\tools\.store\leduftw.monad\2.2.0\leduftw.monad.win-x64\2.2.0\tools\any\win-x64\monad.exe";
+
+        // Act
+        UpdatePlan unix = Updater.PlanFor(InstallChannel.NuGet, global, windows: false)!;
+        UpdatePlan windows = Updater.PlanFor(InstallChannel.NuGet, folder, windows: true)!;
+
+        // Assert
+        $"{unix.Program} {string.Join(' ', unix.Arguments)}".Should()
+            .Be("dotnet tool update --tool-path /Users/me/.dotnet/tools leduftw.monad");
+        unix.Detach.Should().BeFalse();
+        windows.Arguments.Should().Equal("tool", "update", "--tool-path", @"D:\tools", "leduftw.monad");
+        windows.Detach.Should().BeTrue("Windows can't replace the running monad.exe");
+        Updater.PlanFor(InstallChannel.NuGet, "/usr/local/bin/monad", windows: false).Should().BeNull();
     }
 
     [Fact]
@@ -262,6 +291,48 @@ public sealed class UpdaterTests
     }
 
     [Theory]
+    [InlineData(HttpStatusCode.NotFound, "")]
+    [InlineData(HttpStatusCode.OK, """{"versions":["2.0.2"]}""")]
+    public async Task RunAsync_WhenNuGetIsNotReady_ReportsTheNewReleaseAndSucceeds(HttpStatusCode status, string body)
+    {
+        using Installation installed = new(NuGetStore);
+        using UpdateHttpHandler handler = new(request => request.RequestUri!.Host == "github.com"
+            ? RedirectTo("2.1.0") : new HttpResponseMessage(status) { Content = new StringContent(body) });
+        using HttpClient http = new(handler);
+        using StringWriter output = new();
+        using StringWriter error = new();
+
+        int code = await Updater.RunAsync("2.0.2", installed.Executable, http, output, error, CancellationToken.None);
+
+        code.Should().Be(0);
+        output.ToString().Should().Contain("2.1.0 is out, but not on NuGet yet");
+        error.ToString().Should().BeEmpty();
+        handler.Requests.Should().Equal(
+            "https://github.com/leduftw/monad/releases/latest",
+            "https://api.nuget.org/v3-flatcontainer/leduftw.monad/index.json");
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError, "", "it answered 500")]
+    [InlineData(HttpStatusCode.OK, "{}", "lists no versions")]
+    [InlineData(HttpStatusCode.OK, "<html>", "is an invalid start of a value")]
+    public async Task RunAsync_WhenNuGetCannotBeRead_ReportsExitOne(HttpStatusCode status, string body, string reason)
+    {
+        using Installation installed = new(NuGetStore);
+        using UpdateHttpHandler handler = new(request => request.RequestUri!.Host == "github.com"
+            ? RedirectTo("2.1.0") : new HttpResponseMessage(status) { Content = new StringContent(body) });
+        using HttpClient http = new(handler);
+        using StringWriter output = new();
+        using StringWriter error = new();
+
+        int code = await Updater.RunAsync("2.0.2", installed.Executable, http, output, error, CancellationToken.None);
+
+        code.Should().Be(1);
+        output.ToString().Should().BeEmpty();
+        error.ToString().Should().StartWith("monad: can't check NuGet for 2.1.0").And.Contain(reason);
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public async Task RunAsync_WhenAReleaseOrWinGetRequestTimesOut_ReportsExitOne(bool latestRequest)
@@ -280,6 +351,10 @@ public sealed class UpdaterTests
         error.ToString().Should().StartWith("monad: can't check").And.Contain("request timed out");
         handler.Requests.Should().HaveCount(latestRequest ? 1 : 2);
     }
+
+    /// <summary>Where <c>dotnet tool install</c> puts monad on macOS, below the folder it installs into.</summary>
+    private static readonly string[] NuGetStore =
+        [".store", "leduftw.monad", "2.0.2", "leduftw.monad.osx-arm64", "2.0.2", "tools", "any", "osx-arm64"];
 
     private static HttpResponseMessage RedirectTo(string version) => new(HttpStatusCode.Redirect)
     {

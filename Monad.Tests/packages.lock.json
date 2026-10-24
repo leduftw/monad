@@ -117,7 +117,7 @@
           "xunit.extensibility.core": "[2.9.3]"
         }
       },
-      "monad": {
+      "leduftw.monad": {
         "type": "Project",
         "dependencies": {
           "NAudio.Wasapi": "[2.4.0, )",
