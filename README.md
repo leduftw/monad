@@ -65,6 +65,18 @@ The Unix installer never invokes `sudo`; if its destination is not already on
 Versioned copies of both installer scripts are attached to every GitHub
 Release for inspection and reproducible use.
 
+### NuGet (.NET tool)
+
+```sh
+dotnet tool install -g leduftw.monad
+```
+
+This needs the .NET 10 SDK or newer to install, but nothing from .NET to run:
+each platform gets the same self-contained binary as its release archive, and
+macOS also gets the capture helper. Global tools live in `~/.dotnet/tools`
+(`%USERPROFILE%\.dotnet\tools` on Windows), which has to be on `PATH`. A new
+release usually reaches NuGet a few minutes after it's published.
+
 ### Start monitoring
 
 Get an API token from [AudD](https://audd.io), then:
@@ -88,11 +100,13 @@ monad update                        # or: monad upgrade
 
 `monad update` checks for a newer release and installs it the same way Monad
 was installed: `brew upgrade leduftw/tap/monad` for Homebrew,
-`winget upgrade --id leduftw.monad` for WinGet, and the direct installer again,
-into the same folder, for everything else. A new version reaches WinGet only
-after Microsoft's review, so until it does, `monad update` says the release
-isn't on WinGet yet. A build from source isn't updated this way. All six
-platform archives are also available from the
+`winget upgrade --id leduftw.monad` for WinGet, `dotnet tool update` for
+NuGet, wherever the tool was installed, and the direct installer again, into
+the same folder, for everything else. A new version reaches WinGet only after
+Microsoft's review, and NuGet once it has checked and indexed the packages, so
+until then `monad update` says the release isn't there yet. A build from source
+isn't updated this way, and neither is a local .NET tool, whose tool manifest
+pins its version. All six platform archives are also available from the
 [latest GitHub Release](https://github.com/leduftw/monad/releases/latest).
 
 ## How it works
@@ -334,7 +348,7 @@ Set `MONAD_AUDIOTAP_PATH` to point at a helper built somewhere else.
 
 Releases follow [leduftw/playbook](https://github.com/leduftw/playbook): a release
 PR builds and smoke-tests every archive, and merging it publishes the release and
-updates Homebrew, WinGet and the installers. monad's specifics live in
+updates Homebrew, WinGet, the installers and NuGet. monad's specifics live in
 [`.github/playbook.toml`](.github/playbook.toml).
 
 ## Licence

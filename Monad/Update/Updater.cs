@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -15,11 +16,17 @@ public enum InstallChannel
     Homebrew,
     WinGet,
 
+    /// <summary>A .NET tool from NuGet, kept in the <c>.store</c> of the folder it was installed into.</summary>
+    NuGet,
+
     /// <summary>The one-line installer, which put monad in a folder of its own choosing.</summary>
     Installer,
 
     /// <summary>Built from source (<c>bin/Debug</c> or <c>bin/Release</c>), so there's nothing to update.</summary>
     LocalBuild,
+
+    /// <summary>A local .NET tool, run from NuGet's package folder and pinned by its tool manifest.</summary>
+    LocalTool,
 
     /// <summary>Not a monad executable at all, such as <c>dotnet monad.dll</c>.</summary>
     Unknown,
@@ -51,6 +58,18 @@ public static class Updater
     private const string WinGetManifests =
         "https://raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/l/leduftw/monad";
 
+    /// <summary>Where <c>dotnet tool install</c> keeps monad, inside the folder it installs into.</summary>
+    private const string NuGetStore = "/.store/leduftw.monad/";
+
+    /// <summary>
+    /// A local tool runs straight from NuGet's package folder, inside the package
+    /// for its platform: <c>leduftw.monad.&lt;runtime&gt;/&lt;version&gt;/tools/any/&lt;runtime&gt;/</c>.
+    /// </summary>
+    private const string NuGetPlatformPackage = "/leduftw.monad.";
+
+    /// <summary>Every version of monad on NuGet, once NuGet has checked and indexed it.</summary>
+    private const string NuGetVersions = "https://api.nuget.org/v3-flatcontainer/leduftw.monad/index.json";
+
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
 
     /// <summary>Tells the channel from the executable's resolved path.</summary>
@@ -76,6 +95,17 @@ public static class Updater
             return InstallChannel.WinGet;
         }
 
+        if (path.Contains(NuGetStore, StringComparison.OrdinalIgnoreCase))
+        {
+            return InstallChannel.NuGet;
+        }
+
+        if (path.Contains(NuGetPlatformPackage, StringComparison.OrdinalIgnoreCase)
+            && path.Contains("/tools/any/", StringComparison.OrdinalIgnoreCase))
+        {
+            return InstallChannel.LocalTool;
+        }
+
         if (path.Contains("/bin/Debug/", StringComparison.Ordinal) || path.Contains("/bin/Release/", StringComparison.Ordinal))
         {
             return InstallChannel.LocalBuild;
@@ -95,6 +125,15 @@ public static class Updater
         {
             InstallChannel.Homebrew => new("Homebrew", "brew", ["upgrade", "leduftw/tap/monad"], null, Detach: false),
             InstallChannel.WinGet => new("WinGet", "winget", ["upgrade", "--id", "leduftw.monad"], null, Detach: true),
+
+            // The folder holding the store covers a global install and a --tool-path one alike.
+            InstallChannel.NuGet when ToolPath(executable) is { } toolPath => new(
+                "NuGet",
+                "dotnet",
+                ["tool", "update", "--tool-path", toolPath, "leduftw.monad"],
+                null,
+                Detach: windows),
+
             InstallChannel.Installer when windows => new(
                 "the installer",
                 "powershell",
@@ -111,6 +150,22 @@ public static class Updater
                 folder,
                 Detach: false),
             _ => null,
+        };
+    }
+
+    /// <summary>The folder a .NET tool was installed into: the one holding its <c>.store</c>.</summary>
+    private static string? ToolPath(string executable)
+    {
+        int store = executable.Replace('\\', '/').LastIndexOf(NuGetStore, StringComparison.OrdinalIgnoreCase);
+
+        // Keep filesystem roots absolute: C: means the current directory on
+        // that drive, whereas C:\ means its root.
+        return store switch
+        {
+            < 0 => null,
+            0 => executable[..1],
+            2 when executable[1] == ':' => executable[..3],
+            _ => executable[..store],
         };
     }
 
@@ -212,6 +267,14 @@ public static class Updater
             throw new UpdateException($"{executable} is a local build; update it with `git pull` and `dotnet build`.");
         }
 
+        // Its tool manifest decides the version, and usually lives in someone's
+        // repository, so monad doesn't change it behind their back.
+        if (channel == InstallChannel.LocalTool)
+        {
+            throw new UpdateException(
+                $"{executable} is a local .NET tool; update it with `dotnet tool update leduftw.monad` beside its tool manifest.");
+        }
+
         UpdatePlan plan = PlanFor(channel, executable, OperatingSystem.IsWindows())
             ?? throw new UpdateException($"can't tell how monad was installed: it runs as {executable}.");
         Version current = ParseVersion(currentVersion)
@@ -234,6 +297,14 @@ public static class Updater
             await output.WriteLineAsync(
                 $"monad {latest} is out, but not on WinGet yet: Microsoft reviews each new version first, "
                 + "which can take a few days.").ConfigureAwait(false);
+            return;
+        }
+
+        if (channel == InstallChannel.NuGet && !await OnNuGetAsync(http, latest, cancellationToken).ConfigureAwait(false))
+        {
+            await output.WriteLineAsync(
+                $"monad {latest} is out, but not on NuGet yet: NuGet checks and indexes each new version first, "
+                + "which takes a few minutes.").ConfigureAwait(false);
             return;
         }
 
@@ -338,6 +409,61 @@ public static class Updater
         catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
             throw new UpdateException($"can't check WinGet for {version}: {ex.Message}");
+        }
+    }
+
+    private static async Task<bool> OnNuGetAsync(HttpClient http, Version version, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using HttpResponseMessage response = await http.GetAsync(new Uri(NuGetVersions), cancellationToken).ConfigureAwait(false);
+
+            switch (response.StatusCode)
+            {
+                case HttpStatusCode.NotFound:
+                    return false;
+                case not HttpStatusCode.OK:
+                    throw new UpdateException($"can't check NuGet for {version}: it answered {(int)response.StatusCode}.");
+            }
+
+            string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using JsonDocument index = JsonDocument.Parse(body);
+
+            if (index.RootElement.ValueKind != JsonValueKind.Object
+                || !index.RootElement.TryGetProperty("versions", out JsonElement versions)
+                || versions.ValueKind != JsonValueKind.Array)
+            {
+                throw new UpdateException($"can't check NuGet for {version}: its answer lists no versions.");
+            }
+
+            bool available = false;
+
+            foreach (JsonElement listed in versions.EnumerateArray())
+            {
+                if (listed.ValueKind != JsonValueKind.String)
+                {
+                    throw new UpdateException($"can't check NuGet for {version}: its answer lists an invalid version.");
+                }
+
+                if (listed.GetString() == version.ToString())
+                {
+                    available = true;
+                }
+            }
+
+            return available;
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new UpdateException($"can't check NuGet for {version}: {ex.Message}");
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new UpdateException($"can't check NuGet for {version}: {ex.Message}");
+        }
+        catch (JsonException ex)
+        {
+            throw new UpdateException($"can't check NuGet for {version}: {ex.Message}");
         }
     }
 

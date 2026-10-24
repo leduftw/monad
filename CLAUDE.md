@@ -54,7 +54,8 @@ ISystemAudioSource → RollingAudioBuffer → WindowAnalyzer → AuddRecognizer
   file. Monad prints its own help, version and mistakes (`HelpText`,
   `StyledText`, `TerminalColors`) to follow the playbook's command-line rules.
 - **Update/** — `monad update`: finds how Monad was installed from its
-  executable's resolved path and runs Homebrew, WinGet or the installer.
+  executable's resolved path and runs Homebrew, WinGet, `dotnet tool update` or
+  the installer.
 - **native/macos/AudioTap/** — Swift sidecar. Core Audio process taps are an
   Objective-C API, so this is a separate binary that streams PCM to stdout,
   built by an MSBuild target in `Monad.csproj`.
@@ -81,11 +82,13 @@ combinations that cannot work.
   but enough that recognition never matches anything. Verify with a known tone:
   play a 440 Hz sine, capture it, and check it comes back at 440 Hz.
 - **Release binaries are only ad-hoc signed on macOS and unsigned on Windows.**
-  Homebrew and the one-line installers don't trip Gatekeeper the way a browser
-  download does. Developer ID signing would need hardened runtime with
-  `com.apple.security.cs.allow-jit` and notarization; never re-sign the .NET
-  single-file host with generic options, because that breaks its bundle. The
-  playbook only ad-hoc signs binaries that aren't signed yet (the Swift helper).
+  Homebrew, the one-line installers and `dotnet tool install` don't trip
+  Gatekeeper the way a browser download does. Developer ID signing would need
+  hardened runtime with `com.apple.security.cs.allow-jit` and notarization; never
+  re-sign the .NET single-file host with generic options, because that breaks its
+  bundle. The build signs the Swift helper ad hoc as soon as `swiftc` makes it,
+  since nothing can sign it inside a NuGet package; the playbook signs only
+  binaries that aren't signed yet.
 - **`scripts/smoke-posix-signals.sh` is part of every release.** The playbook runs
   it against the packaged binary on macOS and Linux (see `.github/playbook.toml`),
   so a release can't ship if SIGTERM stops shutting monad down gracefully.
@@ -147,7 +150,7 @@ A command-line tool here follows the [Command Line Interface Guidelines](https:/
 This repo is published: other people install it.
 
 - `playbook release patch|minor|major` opens a PR that only bumps the version; nobody types a version number. The first release is always 1.0.0, and every later one is exactly the next patch, minor or major.
-- That PR builds and smoke-tests every release file on all six platforms. Landing it with `playbook finish` tags the release, publishes it on GitHub Releases and updates the Homebrew tap, WinGet and the one-line installers.
+- That PR builds and smoke-tests every release file on all six platforms. Landing it with `playbook finish` tags the release, publishes it on GitHub Releases and updates the Homebrew tap, WinGet, the one-line installers and NuGet.
 - A published release is locked. A broken one is never fixed in place; ship the next patch.
 - If a channel fails (an expired token, a WinGet outage), fix the cause, then run `gh workflow run playbook --ref main`. A manual run whose version matches the latest release updates only its channels, from the files already published.
 <!-- playbook:end -->
