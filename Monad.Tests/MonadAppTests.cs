@@ -47,7 +47,7 @@ public sealed class MonadAppTests
         FakeAudioSource source = FakeAudioSource.Tone(
             amplitude: 0.2f, sampleRate: Rate, channels: 2, cadence: TimeSpan.FromMilliseconds(100));
 
-        FakeRecognizer recognizer = new(FakeRecognizer.Match("Nina Simone", "Feeling Good", "USSM17300123"));
+        FakeRecognizer recognizer = new(FakeRecognizer.Match("Artist A", "Song A", "USS1Z2600001"));
         RecordingSegmentSink sink = new();
 
         MonadApp app = new(source, recognizer, sink, Config, TimeProvider.System, MonadLog.Silent);
@@ -63,7 +63,7 @@ public sealed class MonadAppTests
 
         sink.Segments.Should().ContainSingle();
         sink.Segments[0].Kind.Should().Be(SegmentKind.Song);
-        sink.Segments[0].SongKey.Should().Be("isrc:USSM17300123");
+        sink.Segments[0].SongKey.Should().Be("isrc:USS1Z2600001");
     }
 
     [Fact]
@@ -153,7 +153,7 @@ public sealed class MonadAppTests
         CancellationAwareSink sink = new();
         FailAfterSignalSource source = new(sink.Entered);
         FakeRecognizer recognizer = new(
-            FakeRecognizer.Match("Nina Simone", "Feeling Good", "USSM17300123"),
+            FakeRecognizer.Match("Artist A", "Song A", "USS1Z2600001"),
             RecognitionOutcome.NoMatch);
 
         MonadApp app = new(source, recognizer, sink, Config with { UnknownPersistLoops = 1 },

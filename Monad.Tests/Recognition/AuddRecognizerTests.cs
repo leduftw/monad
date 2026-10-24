@@ -28,12 +28,12 @@ public sealed class AuddRecognizerTests
     {
         // Arrange / Act
         RecognitionOutcome outcome = Parse(
-            """{"status":"success","result":{"artist":"Nina Simone","title":"Feeling Good","isrc":"USSM17300123"}}""");
+            """{"status":"success","result":{"artist":"Artist A","title":"Song A","isrc":"USS1Z2600001"}}""");
 
         // Assert
         outcome.Status.Should().Be(RecognitionStatus.Match);
-        outcome.Result!.Artist.Should().Be("Nina Simone");
-        outcome.Result.IsrcInfo.Selected.Should().Be("USSM17300123");
+        outcome.Result!.Artist.Should().Be("Artist A");
+        outcome.Result.IsrcInfo.Selected.Should().Be("USS1Z2600001");
     }
 
     [Theory]

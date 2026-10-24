@@ -21,8 +21,8 @@ public sealed class SegmentSinkTests
         SegmentKind.Song,
         T0,
         T0.AddSeconds(185),
-        "isrc:GB5EM1001054",
-        "Isabelle Antena - Le Poisson Des Mers Du Sud [ISRC: GB5EM1001054]");
+        "isrc:USS1Z2600001",
+        "Artist A - Song A [ISRC: USS1Z2600001]");
 
     private static Segment Silence => new(SegmentKind.Silence, T0, T0.AddSeconds(65), null, null);
 
@@ -40,7 +40,7 @@ public sealed class SegmentSinkTests
 
         // Assert
         string line = writer.ToString().TrimEnd();
-        line.Should().StartWith("SEGMENT").And.Contain("Isabelle Antena").And.Contain("3m05s");
+        line.Should().StartWith("SEGMENT").And.Contain("Artist A").And.Contain("3m05s");
     }
 
     [Fact]
@@ -70,8 +70,8 @@ public sealed class SegmentSinkTests
 
         // Assert
         root.GetProperty("kind").GetString().Should().Be("song");
-        root.GetProperty("songKey").GetString().Should().Be("isrc:GB5EM1001054");
-        root.GetProperty("display").GetString().Should().Contain("Isabelle Antena");
+        root.GetProperty("songKey").GetString().Should().Be("isrc:USS1Z2600001");
+        root.GetProperty("display").GetString().Should().Contain("Artist A");
         root.GetProperty("durationSeconds").GetDouble().Should().Be(185);
         root.GetProperty("startUtc").GetString().Should().StartWith("2026-01-15T10:00:00");
     }

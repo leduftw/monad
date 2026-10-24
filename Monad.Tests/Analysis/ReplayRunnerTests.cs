@@ -73,7 +73,7 @@ public sealed class ReplayRunnerTests
     {
         // Arrange — 10 seconds of audio, always recognised as the same track
         RecordingSegmentSink sink = new();
-        FakeRecognizer recognizer = new(FakeRecognizer.Match("Nina Simone", "Feeling Good", "USSM17300123"));
+        FakeRecognizer recognizer = new(FakeRecognizer.Match("Artist", "Song", "AAA111111111"));
 
         // Act
         RunSummary summary = await Run(Tone(10, 0.05f), recognizer, sink);
@@ -84,8 +84,8 @@ public sealed class ReplayRunnerTests
 
         sink.Segments.Should().ContainSingle();
         sink.Segments[0].Kind.Should().Be(SegmentKind.Song);
-        sink.Segments[0].SongKey.Should().Be("isrc:USSM17300123");
-        sink.Segments[0].DisplayText.Should().Contain("Nina Simone");
+        sink.Segments[0].SongKey.Should().Be("isrc:AAA111111111");
+        sink.Segments[0].DisplayText.Should().Contain("Artist");
     }
 
     [Fact]

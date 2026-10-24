@@ -10,10 +10,10 @@ Runs on macOS, Windows, and Linux, with no virtual audio device to install on
 any of them.
 
 ```
-SEGMENT  [2026-01-15 01:26:01 - 01:27:46]    1m45s  Isabelle Antena - Le Poisson Des Mers Du Sud [ISRC: GB5EM1001054]
-SEGMENT  [2026-01-15 01:27:46 - 01:30:42]    2m56s  Eartha Kitt - Je Cherche Un Homme [ISRC: USRC19900468]
+SEGMENT  [2026-01-15 01:26:01 - 01:27:46]    1m45s  Artist A - Song A [ISRC: USS1Z2600001]
+SEGMENT  [2026-01-15 01:27:46 - 01:30:42]    2m56s  Artist B - Song B [ISRC: USS1Z2600002]
 SEGMENT  [2026-01-15 01:30:42 - 01:31:52]    1m10s  UNKNOWN
-SEGMENT  [2026-01-15 01:31:52 - 01:34:29]    2m37s  Serge Gainsbourg - Couleur Café [ISRC: FRZ036400450]
+SEGMENT  [2026-01-15 01:31:52 - 01:34:29]    2m37s  Artist C - Song C [ISRC: USS1Z2600003]
 SEGMENT  [2026-01-15 01:34:29 - 01:36:03]    1m34s  SILENCE
 ```
 
@@ -245,7 +245,7 @@ monad --jsonl ~/listening.jsonl
 One object per line, appended as each segment finishes:
 
 ```json
-{"kind":"song","startUtc":"2026-01-15T01:26:01.0000000Z","endUtc":"2026-01-15T01:27:46.0000000Z","durationSeconds":105,"songKey":"isrc:GB5EM1001054","display":"Isabelle Antena - Le Poisson Des Mers Du Sud [ISRC: GB5EM1001054]"}
+{"kind":"song","startUtc":"2026-01-15T01:26:01.0000000Z","endUtc":"2026-01-15T01:27:46.0000000Z","durationSeconds":105,"songKey":"isrc:USS1Z2600001","display":"Artist A - Song A [ISRC: USS1Z2600001]"}
 ```
 
 ### Trying things without spending quota
