@@ -98,7 +98,7 @@
   <Target Name="BuildAudioTapSidecar"
           BeforeTargets="BeforeBuild"
           Condition="'$(IsMacOsTarget)' == 'true' and '$(SkipAudioTapSidecar)' != 'true'"
-          Inputs="@(AudioTapSource)"
+          Inputs="@(AudioTapSource);$(MSBuildProjectFullPath)"
           Outputs="$(AudioTapBinary)">
     <MakeDir Directories="$(BaseIntermediateOutputPath)audiotap/$(AudioTapBuildVariant)" />
     <!-- Signed ad hoc as soon as it's built: the linker signs only arm64 code,

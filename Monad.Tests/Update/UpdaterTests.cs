@@ -145,6 +145,18 @@ public sealed class UpdaterTests
         Updater.PlanFor(InstallChannel.NuGet, "/usr/local/bin/monad", windows: false).Should().BeNull();
     }
 
+    [Theory]
+    [InlineData("/.store/leduftw.monad/2.2.0/tools/any/osx-arm64/monad", "/", false)]
+    [InlineData(@"D:\.store\leduftw.monad\2.2.0\tools\any\win-x64\monad.exe", @"D:\", true)]
+    [InlineData("D:/.store/leduftw.monad/2.2.0/tools/any/win-x64/monad.exe", "D:/", true)]
+    public void PlanFor_NuGetAtFileSystemRoot_PreservesRoot(string executable, string folder, bool windows)
+    {
+        UpdatePlan plan = Updater.PlanFor(InstallChannel.NuGet, executable, windows)!;
+
+        plan.Arguments.Should().Equal("tool", "update", "--tool-path", folder, "leduftw.monad");
+        plan.Detach.Should().Be(windows);
+    }
+
     [Fact]
     public void PlanFor_TheInstallerReinstallsIntoTheSameFolder()
     {
@@ -315,6 +327,11 @@ public sealed class UpdaterTests
     [Theory]
     [InlineData(HttpStatusCode.InternalServerError, "", "it answered 500")]
     [InlineData(HttpStatusCode.OK, "{}", "lists no versions")]
+    [InlineData(HttpStatusCode.OK, "[]", "lists no versions")]
+    [InlineData(HttpStatusCode.OK, "null", "lists no versions")]
+    [InlineData(HttpStatusCode.OK, """{"versions":[42]}""", "invalid version")]
+    [InlineData(HttpStatusCode.OK, """{"versions":[null]}""", "invalid version")]
+    [InlineData(HttpStatusCode.OK, """{"versions":["2.1.0",null]}""", "invalid version")]
     [InlineData(HttpStatusCode.OK, "<html>", "is an invalid start of a value")]
     public async Task RunAsync_WhenNuGetCannotBeRead_ReportsExitOne(HttpStatusCode status, string body, string reason)
     {

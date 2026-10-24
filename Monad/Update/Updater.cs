@@ -143,7 +143,15 @@ public static class Updater
     {
         int store = executable.Replace('\\', '/').LastIndexOf(NuGetStore, StringComparison.OrdinalIgnoreCase);
 
-        return store < 0 ? null : executable[..store];
+        // Keep filesystem roots absolute: C: means the current directory on
+        // that drive, whereas C:\ means its root.
+        return store switch
+        {
+            < 0 => null,
+            0 => executable[..1],
+            2 when executable[1] == ':' => executable[..3],
+            _ => executable[..store],
+        };
     }
 
     /// <summary>
@@ -398,20 +406,29 @@ public static class Updater
             string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             using JsonDocument index = JsonDocument.Parse(body);
 
-            if (!index.RootElement.TryGetProperty("versions", out JsonElement versions) || versions.ValueKind != JsonValueKind.Array)
+            if (index.RootElement.ValueKind != JsonValueKind.Object
+                || !index.RootElement.TryGetProperty("versions", out JsonElement versions)
+                || versions.ValueKind != JsonValueKind.Array)
             {
                 throw new UpdateException($"can't check NuGet for {version}: its answer lists no versions.");
             }
 
+            bool available = false;
+
             foreach (JsonElement listed in versions.EnumerateArray())
             {
-                if (listed.ValueKind == JsonValueKind.String && listed.GetString() == version.ToString())
+                if (listed.ValueKind != JsonValueKind.String)
                 {
-                    return true;
+                    throw new UpdateException($"can't check NuGet for {version}: its answer lists an invalid version.");
+                }
+
+                if (listed.GetString() == version.ToString())
+                {
+                    available = true;
                 }
             }
 
-            return false;
+            return available;
         }
         catch (HttpRequestException ex)
         {
