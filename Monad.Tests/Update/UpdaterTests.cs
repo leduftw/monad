@@ -17,6 +17,8 @@ namespace Monad.Tests.Update;
 
 public sealed class UpdaterTests
 {
+    private const string WinGetFolder = "leduftw.monad_Microsoft.Winget.Source_8wekyb3d8bbwe";
+
     // --- Channels ---
 
     [Theory]
@@ -29,11 +31,23 @@ public sealed class UpdaterTests
     }
 
     [Theory]
-    [InlineData(@"C:\Users\me\AppData\Local\Microsoft\WinGet\Packages\leduftw.monad_Microsoft.Winget.Source_8wekyb3d8bbwe\monad.exe")]
-    [InlineData(@"C:\Users\me\AppData\Local\Microsoft\WinGet\Links\monad.exe")]
-    public void ChannelOf_WinGetKeepsMonadInItsPackagesFolder(string path)
+    [InlineData(@"C:\Users\me\AppData\Local\Microsoft\WinGet\Packages\" + WinGetFolder + @"\monad.exe")]
+    [InlineData(@"C:\Program Files\WinGet\Packages\" + WinGetFolder + @"\monad.exe")]
+    [InlineData(@"C:\Program Files (x86)\WinGet\Packages\" + WinGetFolder + @"\monad.exe")]
+    [InlineData(@"D:\portable\" + WinGetFolder + @"\monad.exe")]
+    [InlineData(@"\\?\C:\Program Files\WinGet\Packages\" + WinGetFolder + @"\monad.exe")]
+    public void ChannelOf_WinGetKeepsMonadInAFolderOfItsOwn(string path)
     {
         Updater.ChannelOf(path).Should().Be(InstallChannel.WinGet);
+    }
+
+    [Theory]
+    [InlineData(@"D:\tools\monad.exe")] // winget install --location puts monad straight into the folder
+    [InlineData(@"C:\Users\me\AppData\Local\Microsoft\WinGet\Packages\another.package\monad.exe")]
+    [InlineData(@"C:\Program Files\WinGet\Packages\" + WinGetFolder + @".old\monad.exe")]
+    public void ChannelOf_OnlyThatFolderMeansWinGet(string path)
+    {
+        Updater.ChannelOf(path).Should().Be(InstallChannel.Installer);
     }
 
     [Theory]
@@ -118,6 +132,19 @@ public sealed class UpdaterTests
 
         Updater.ChannelOf(resolved).Should().Be(InstallChannel.Homebrew);
         resolved.Should().NotContain(Path.DirectorySeparatorChar + "current" + Path.DirectorySeparatorChar);
+    }
+
+    [UnixFact]
+    public void Resolve_FollowsWinGetsLinksIntoItsFolder()
+    {
+        // Arrange — WinGet's Links folder holds a link to the program in its package folder
+        using Installation installed = new("Packages", WinGetFolder);
+        string links = Directory.CreateDirectory(Path.Combine(installed.Root, "Links")).FullName;
+        string link = Path.Combine(links, "monad");
+        File.CreateSymbolicLink(link, installed.Executable);
+
+        // Act / Assert
+        Updater.ChannelOf(Updater.Resolve(link)).Should().Be(InstallChannel.WinGet);
     }
 
     // --- Plans ---
@@ -297,7 +324,7 @@ public sealed class UpdaterTests
     [Fact]
     public async Task RunAsync_WhenWinGetIsNotReady_ReportsTheNewReleaseAndSucceeds()
     {
-        using Installation installed = new("Microsoft", "WinGet", "Packages");
+        using Installation installed = new("WinGet", "Packages", WinGetFolder);
         using UpdateHttpHandler handler = new(request => request.RequestUri!.Host == "github.com"
             ? RedirectTo("2.1.0") : new HttpResponseMessage(HttpStatusCode.NotFound));
         using HttpClient http = new(handler);
@@ -381,7 +408,7 @@ public sealed class UpdaterTests
     [InlineData(false)]
     public async Task RunAsync_WhenAReleaseOrWinGetRequestTimesOut_ReportsExitOne(bool latestRequest)
     {
-        using Installation installed = new("Microsoft", "WinGet", "Packages");
+        using Installation installed = new("WinGet", "Packages", WinGetFolder);
         using UpdateHttpHandler handler = new(request => latestRequest || request.RequestUri!.Host != "github.com"
             ? throw new TaskCanceledException("request timed out") : RedirectTo("2.1.0"));
         using HttpClient http = new(handler);

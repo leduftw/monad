@@ -58,6 +58,12 @@ public static class Updater
     private const string WinGetManifests =
         "https://raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/l/leduftw/monad";
 
+    /// <summary>
+    /// The folder WinGet keeps monad in, for one user, for the whole machine or
+    /// under a root set in its settings. Those roots can be anywhere.
+    /// </summary>
+    private const string WinGetFolder = "/leduftw.monad_Microsoft.Winget.Source_8wekyb3d8bbwe/";
+
     /// <summary>Where <c>dotnet tool install</c> keeps monad, inside the folder it installs into.</summary>
     private const string NuGetStore = "/.store/leduftw.monad/";
 
@@ -90,7 +96,7 @@ public static class Updater
             return InstallChannel.Homebrew;
         }
 
-        if (path.Contains("/microsoft/winget/", StringComparison.OrdinalIgnoreCase))
+        if (path.Contains(WinGetFolder, StringComparison.OrdinalIgnoreCase))
         {
             return InstallChannel.WinGet;
         }
