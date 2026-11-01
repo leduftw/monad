@@ -1,10 +1,12 @@
-# Monad
+# monad
 
-[![playbook](https://github.com/leduftw/monad/actions/workflows/playbook.yml/badge.svg)](https://github.com/leduftw/monad/actions/workflows/playbook.yml)
+[![CI](https://github.com/leduftw/monad/actions/workflows/playbook.yml/badge.svg)](https://github.com/leduftw/monad/actions/workflows/playbook.yml)
 [![Latest release](https://img.shields.io/github/v/release/leduftw/monad)](https://github.com/leduftw/monad/releases/latest)
 
-Real-time music recognition monitor. Listens to whatever your machine is
-playing, identifies the tracks, and writes out a timeline of what played when.
+Watches what your machine is playing and logs it as a timeline.
+
+Monad recognizes music in real time: it listens to whatever your machine is
+playing, identifies the tracks, and writes out what played when.
 
 Runs on macOS, Windows, and Linux, with no virtual audio device to install on
 any of them.
@@ -351,6 +353,6 @@ PR builds and smoke-tests every archive, and merging it publishes the release an
 updates Homebrew, WinGet, the installers and NuGet. monad's specifics live in
 [`.github/playbook.toml`](.github/playbook.toml).
 
-## Licence
+## License
 
 MIT. See [LICENSE](LICENSE).

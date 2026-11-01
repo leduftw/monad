@@ -34,8 +34,8 @@ public static class CommandLineParser
 {
     public const string TokenVariable = "AUDD_API_TOKEN";
 
-    /// <summary>The repo's GitHub description: monad's help and its repo describe it alike.</summary>
-    public const string Description = "watches what your machine is playing and logs it as a timeline";
+    /// <summary>The repo's GitHub description as a sentence: monad's help and its repo describe it in the same words.</summary>
+    public const string Description = "Watches what your machine is playing and logs it as a timeline.";
 
     /// <summary>Exit code for a wrong command, option or value.</summary>
     public const int UsageError = 2;
