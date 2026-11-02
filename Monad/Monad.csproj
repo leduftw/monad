@@ -53,7 +53,7 @@
          the Windows path keeps getting type-checked on macOS and Linux too. -->
     <PackageReference Include="NAudio.Wasapi" Version="2.4.0" />
     <!-- Parses the command line; monad prints its own help, version and errors. -->
-    <PackageReference Include="System.CommandLine" Version="2.0.13" />
+    <PackageReference Include="System.CommandLine" Version="2.0.14" />
   </ItemGroup>
 
   <!-- ==================================================================
