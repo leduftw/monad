@@ -9,6 +9,12 @@ using System.Threading.Tasks;
 
 using NAudio.Wave;
 
+// NAudio 3 deprecates WasapiLoopbackCapture in favour of WasapiRecorder, but it
+// still ships and works. WasapiRecorder hands over buffers and silent packets
+// differently, and only a Windows machine can check that capture still sounds
+// right, so the move to it is a change of its own.
+#pragma warning disable CS0618
+
 namespace Monad.Audio.Sources;
 
 /// <summary>
@@ -25,8 +31,10 @@ public sealed class WasapiLoopbackSource(Action<string> logDiagnostic) : ISystem
     public async IAsyncEnumerable<AudioBlock> ReadAsync([EnumeratorCancellation] CancellationToken cancellationToken)
     {
         // Bounded so a stalled consumer drops old audio instead of growing without limit.
+        // NAudio raises one event per WASAPI packet, usually 10 ms of audio, so this
+        // holds about three seconds.
         Channel<float[]> channel = Channel.CreateBounded<float[]>(
-            new BoundedChannelOptions(64) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true });
+            new BoundedChannelOptions(320) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true });
 
         WasapiLoopbackCapture capture = new();
         this.capture = capture;
