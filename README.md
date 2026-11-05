@@ -201,6 +201,17 @@ export DOTNET_ROOT=/opt/homebrew/opt/dotnet/libexec
 `dotnet run --project Monad` works either way.
 </details>
 
+### Windows loopback check
+
+On Windows with an active output device, these opt-in tests play a quiet
+generated tone and check real WASAPI capture, silence, cancellation and restart.
+Run them without other audio playing. No AudD token or requests are needed.
+
+```powershell
+$env:MONAD_TEST_WASAPI = "1"
+dotnet test --filter "FullyQualifiedName~WasapiLoopbackIntegrationTests"
+```
+
 ## Usage
 
 ```text

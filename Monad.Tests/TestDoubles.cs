@@ -25,6 +25,32 @@ public sealed class UnixFactAttribute : FactAttribute
     }
 }
 
+public sealed class WindowsFactAttribute : FactAttribute
+{
+    public WindowsFactAttribute()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            this.Skip = "This fixture requires a Windows host.";
+        }
+    }
+}
+
+public sealed class WindowsAudioFactAttribute : FactAttribute
+{
+    public WindowsAudioFactAttribute()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            this.Skip = "This fixture requires a Windows host.";
+        }
+        else if (Environment.GetEnvironmentVariable("MONAD_TEST_WASAPI") != "1")
+        {
+            this.Skip = "Set MONAD_TEST_WASAPI=1 to test a live Windows output device.";
+        }
+    }
+}
+
 /// <summary>Replays a scripted sequence of outcomes and keeps what it was sent.</summary>
 public sealed class FakeRecognizer(params RecognitionOutcome[] script) : ISongRecognizer
 {

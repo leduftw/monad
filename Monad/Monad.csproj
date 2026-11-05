@@ -49,6 +49,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Monad.Tests" />
     <!-- Windows loopback capture. Compiles everywhere, guarded at runtime, so
          the Windows path keeps getting type-checked on macOS and Linux too. -->
     <PackageReference Include="NAudio.Wasapi" Version="3.3.0" />
