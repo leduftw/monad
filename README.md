@@ -348,6 +348,15 @@ The macOS helper can be exercised on its own:
 
 Set `MONAD_AUDIOTAP_PATH` to point at a helper built somewhere else.
 
+On Windows with an active output device, opt-in tests play a quiet generated
+tone and check real WASAPI capture, silence, cancellation and restart. Run them
+without other audio playing. No AudD token or requests are needed.
+
+```powershell
+$env:MONAD_TEST_WASAPI = "1"
+dotnet test --filter "FullyQualifiedName~WasapiLoopbackIntegrationTests"
+```
+
 Releases follow [leduftw/playbook](https://github.com/leduftw/playbook): a release
 PR builds and smoke-tests every archive, and merging it publishes the release and
 updates Homebrew, WinGet, the installers and NuGet. monad's specifics live in
